@@ -1,0 +1,5 @@
+{
+  "name": "FujiSim Web",
+  "description": "A browser-based film simulation engine allowing users to apply Fujifilm-inspired aesthetics to their photos using real-time 3D LUT processing.",
+  "requestFramePermissions": []
+}
