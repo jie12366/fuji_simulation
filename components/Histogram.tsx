@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef } from 'react';
 import { HistogramData } from '../types';
 
@@ -72,8 +71,8 @@ export const Histogram: React.FC<HistogramProps> = ({ data }) => {
   return (
     <div className="w-full bg-gray-900 border border-gray-700 rounded-md p-2 mb-6">
        <div className="flex justify-between text-[10px] text-gray-500 mb-1 uppercase tracking-wider">
-         <span>Shadows</span>
-         <span>Highlights</span>
+         <span>阴影 (暗部)</span>
+         <span>高光 (亮部)</span>
        </div>
        <canvas 
          ref={canvasRef} 

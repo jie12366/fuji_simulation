@@ -115,6 +115,9 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
   return [r, g, b];
 }
 
+// Helper for simple linear interpolation
+const lerp = (a: number, b: number, t: number) => a + t * (b - a);
+
 export const applyLUT = (
   pixelData: ImageData, 
   lutData: LUTData, 
@@ -149,7 +152,9 @@ export const applyLUT = (
   const centerY = height / 2;
   const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
 
-  const scale = (LUT_SIZE - 1) / 255;
+  // LUT Scale Factors
+  const LUT_MAX = LUT_SIZE - 1;
+  const scale = LUT_MAX / 255;
 
   // Random generator
   const random = mulberry32(1337);
@@ -191,9 +196,9 @@ export const applyLUT = (
       }
 
       // Clamp
-      r = r < 0 ? 0 : (r > 255 ? 255 : r);
-      g = g < 0 ? 0 : (g > 255 ? 255 : g);
-      b = b < 0 ? 0 : (b > 255 ? 255 : b);
+      r = Math.max(0, Math.min(255, r));
+      g = Math.max(0, Math.min(255, g));
+      b = Math.max(0, Math.min(255, b));
 
       const luma = 0.299 * r + 0.587 * g + 0.114 * b;
 
@@ -217,25 +222,96 @@ export const applyLUT = (
       }
 
       // Clamp before LUT
-      r = r < 0 ? 0 : (r > 255 ? 255 : r);
-      g = g < 0 ? 0 : (g > 255 ? 255 : g);
-      b = b < 0 ? 0 : (b > 255 ? 255 : b);
+      r = Math.max(0, Math.min(255, r));
+      g = Math.max(0, Math.min(255, g));
+      b = Math.max(0, Math.min(255, b));
 
-      // --- 2. LUT Lookup ---
+      // --- 2. 3D LUT Lookup with Trilinear Interpolation ---
       
-      let rIdx = (r * scale) | 0;
-      let gIdx = (g * scale) | 0;
-      let bIdx = (b * scale) | 0;
+      // Calculate float positions in LUT space
+      const rPos = r * scale;
+      const gPos = g * scale;
+      const bPos = b * scale;
 
-      if (rIdx >= LUT_SIZE) rIdx = LUT_SIZE - 1;
-      if (gIdx >= LUT_SIZE) gIdx = LUT_SIZE - 1;
-      if (bIdx >= LUT_SIZE) bIdx = LUT_SIZE - 1;
+      // Lower indices
+      const r0 = Math.floor(rPos);
+      const g0 = Math.floor(gPos);
+      const b0 = Math.floor(bPos);
 
-      const idx = (rIdx + gIdx * LUT_SIZE + bIdx * LUT_SIZE_SQ) * 3;
+      // Upper indices (clamped)
+      const r1 = Math.min(LUT_MAX, r0 + 1);
+      const g1 = Math.min(LUT_MAX, g0 + 1);
+      const b1 = Math.min(LUT_MAX, b0 + 1);
 
-      let lutR = lutData[idx];
-      let lutG = lutData[idx + 1];
-      let lutB = lutData[idx + 2];
+      // Fractional parts (weights for interpolation)
+      const dr = rPos - r0;
+      const dg = gPos - g0;
+      const db = bPos - b0;
+
+      // Pre-calculate index offsets
+      const z0_offset = b0 * LUT_SIZE_SQ;
+      const z1_offset = b1 * LUT_SIZE_SQ;
+      const y0_offset = g0 * LUT_SIZE;
+      const y1_offset = g1 * LUT_SIZE;
+
+      // Fetch 8 corners of the cube
+      // Format in lutData array is (R, G, B) sequentially. 
+      // Array Index = (r + g*WIDTH + b*WIDTH*HEIGHT) * 3
+      
+      // Helper to get RGB from array at specific indices
+      const getC = (ri: number, yOffset: number, zOffset: number) => {
+          const idx = (ri + yOffset + zOffset) * 3;
+          return { r: lutData[idx], g: lutData[idx + 1], b: lutData[idx + 2] };
+      };
+
+      // Corner 000 (x0, y0, z0)
+      const c000 = getC(r0, y0_offset, z0_offset);
+      const c100 = getC(r1, y0_offset, z0_offset);
+      const c010 = getC(r0, y1_offset, z0_offset);
+      const c110 = getC(r1, y1_offset, z0_offset);
+      const c001 = getC(r0, y0_offset, z1_offset);
+      const c101 = getC(r1, y0_offset, z1_offset);
+      const c011 = getC(r0, y1_offset, z1_offset);
+      const c111 = getC(r1, y1_offset, z1_offset);
+
+      // Interpolate along R (x-axis)
+      const c00 = { 
+          r: lerp(c000.r, c100.r, dr), 
+          g: lerp(c000.g, c100.g, dr), 
+          b: lerp(c000.b, c100.b, dr) 
+      };
+      const c10 = { 
+          r: lerp(c010.r, c110.r, dr), 
+          g: lerp(c010.g, c110.g, dr), 
+          b: lerp(c010.b, c110.b, dr) 
+      };
+      const c01 = { 
+          r: lerp(c001.r, c101.r, dr), 
+          g: lerp(c001.g, c101.g, dr), 
+          b: lerp(c001.b, c101.b, dr) 
+      };
+      const c11 = { 
+          r: lerp(c011.r, c111.r, dr), 
+          g: lerp(c011.g, c111.g, dr), 
+          b: lerp(c011.b, c111.b, dr) 
+      };
+
+      // Interpolate along G (y-axis)
+      const c0 = {
+          r: lerp(c00.r, c10.r, dg),
+          g: lerp(c00.g, c10.g, dg),
+          b: lerp(c00.b, c10.b, dg)
+      };
+      const c1 = {
+          r: lerp(c01.r, c11.r, dg),
+          g: lerp(c01.g, c11.g, dg),
+          b: lerp(c01.b, c11.b, dg)
+      };
+
+      // Interpolate along B (z-axis) - Final Result
+      let lutR = lerp(c0.r, c1.r, db);
+      let lutG = lerp(c0.g, c1.g, db);
+      let lutB = lerp(c0.b, c1.b, db);
 
       // Intensity Mix
       if (intensity !== 1) {
@@ -246,8 +322,13 @@ export const applyLUT = (
 
       // --- 3. Film Grain ---
       if (hasGrain) {
-        const l = (0.299 * lutR + 0.587 * lutG + 0.114 * lutB) / 255;
-        const grainMask = 1.0 - Math.pow(2 * l - 1, 2);
+        // Luminance-based grain masking (less grain in pure black/white)
+        // Rec.601 luma for speed
+        const l = (r * 299 + g * 587 + b * 114) / 1000 / 255;
+        // Parabolic curve: 1 at 0.5, 0 at 0 and 1. 
+        // 4 * x * (1-x) is standard symmetric parabola.
+        const grainMask = 1.0 - Math.pow(2 * l - 1, 4); // Higher power = cleaner highlights/shadows
+        
         const noise = (random() - 0.5) * 2;
         const grainVal = noise * grainAmount * grainMask;
         
@@ -260,8 +341,10 @@ export const applyLUT = (
       if (vignetteStr > 0) {
         const dx = x - centerX;
         const dy = y - centerY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const distSq = dx * dx + dy * dy; // Use squared distance to avoid sqrt in inner loop if possible, but for smooth vignette sqrt is better
+        const dist = Math.sqrt(distSq);
         const vFactor = dist / maxDist;
+        // Cubic falloff for smoother vignette
         const darkening = vFactor * vFactor * vFactor * vignetteStr * 255;
         
         lutR = Math.max(0, lutR - darkening);
@@ -270,9 +353,9 @@ export const applyLUT = (
       }
 
       // Final Clamp
-      lutR = lutR < 0 ? 0 : (lutR > 255 ? 255 : lutR);
-      lutG = lutG < 0 ? 0 : (lutG > 255 ? 255 : lutG);
-      lutB = lutB < 0 ? 0 : (lutB > 255 ? 255 : lutB);
+      lutR = Math.max(0, Math.min(255, lutR));
+      lutG = Math.max(0, Math.min(255, lutG));
+      lutB = Math.max(0, Math.min(255, lutB));
 
       outData[i] = lutR;
       outData[i + 1] = lutG;

@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useState } from 'react';
 
 interface CanvasViewProps {
@@ -101,8 +100,8 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={0.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
             </div>
-            <h2 className="text-3xl font-thin tracking-[0.2em] text-white">WORKSPACE</h2>
-            <p className="text-sm mt-4 text-gray-600 font-mono">NO IMAGE LOADED</p>
+            <h2 className="text-3xl font-thin tracking-[0.2em] text-white">工作区</h2>
+            <p className="text-sm mt-4 text-gray-600 font-mono">请先在右侧导入图片</p>
         </div>
       </div>
     );
@@ -129,10 +128,10 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       {/* Info HUD */}
       <div className="absolute top-6 left-6 z-30 flex gap-2">
          <div className="bg-black/80 backdrop-blur text-white text-xs font-mono px-3 py-1.5 rounded border border-gray-800">
-             ZOOM: {Math.round(scale * 100)}%
+             缩放: {Math.round(scale * 100)}%
          </div>
          <button onClick={handleFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors">
-             FIT
+             适应屏幕
          </button>
       </div>
 

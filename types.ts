@@ -1,18 +1,17 @@
-
 export enum FilmSimulation {
-  Provia = 'PROVIA / 标准',
-  Velvia = 'Velvia / 鲜艳',
-  Astia = 'ASTIA / 柔和',
-  ClassicChrome = 'CLASSIC CHROME',
-  RealaAce = 'REALA ACE',
-  ClassicNeg = '经典 Neg.',
-  NostalgicNeg = 'NOSTALGIC Neg.',
-  Eterna = 'ETERNA / 影院',
-  Acros = 'ACROS',
-  AcrosYe = 'ACROS + 黄滤镜',
-  AcrosR = 'ACROS + 红滤镜',
-  AcrosG = 'ACROS + 绿滤镜',
-  Sepia = '棕褐色'
+  Provia = 'PROVIA / 标准模式',
+  Velvia = 'Velvia / 鲜艳模式',
+  Astia = 'ASTIA / 柔和模式',
+  ClassicChrome = 'CLASSIC CHROME / 经典正片',
+  RealaAce = 'REALA ACE / 真实负片',
+  ClassicNeg = 'Classic Neg. / 经典负片',
+  NostalgicNeg = 'Nostalgic Neg. / 怀旧负片',
+  Eterna = 'ETERNA / 电影模式',
+  Acros = 'ACROS / 黑白',
+  AcrosYe = 'ACROS + 黄滤镜 (强反差)',
+  AcrosR = 'ACROS + 红滤镜 (风景)',
+  AcrosG = 'ACROS + 绿滤镜 (人像)',
+  Sepia = 'Sepia / 怀旧棕褐'
 }
 
 export interface HSLChannel {
