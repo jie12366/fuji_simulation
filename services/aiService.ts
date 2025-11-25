@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { Adjustments, FilmSimulation } from "../types";
 
@@ -32,18 +31,17 @@ export const prepareImageForAI = async (img: HTMLImageElement): Promise<string> 
   return canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
 };
 
-// Define the response schema to match our internal state types
+// Define the response schema
 const adjustmentsSchema = {
   type: Type.OBJECT,
   properties: {
     recommendedFilm: {
       type: Type.STRING,
-      description: "The enum value of the film simulation to use.",
-      enum: Object.values(FilmSimulation)
+      description: "The name of the film simulation to use (e.g. 'Classic Chrome', 'Velvia', 'Nostalgic Neg')."
     },
     reasoning: {
       type: Type.STRING,
-      description: "A short explanation of why this look was chosen (e.g., 'Warm sunset detected, enhancing golden tones')."
+      description: "A short explanation of why this look was chosen."
     },
     adjustments: {
       type: Type.OBJECT,
@@ -76,36 +74,43 @@ const adjustmentsSchema = {
 };
 
 export interface AIAnalysisResult {
-  recommendedFilm: FilmSimulation;
+  recommendedFilm: string;
   adjustments: Partial<Adjustments>;
   reasoning: string;
 }
 
-export const analyzeImage = async (base64Image: string): Promise<AIAnalysisResult> => {
+export const analyzeImage = async (base64Image: string, userHint?: string): Promise<AIAnalysisResult> => {
   try {
     const prompt = `
-      Act as a world-class professional colorist and film photographer.
-      Analyze the content, lighting, mood, and composition of this image.
+      Act as a world-class professional colorist.
+      Analyze the content, lighting, mood, and composition of this image to determine the best Fujifilm Simulation style and parameter adjustments.
+
+      Your goal is ARTISTIC expression, not just technical correctness.
       
-      1. Choose the most appropriate Fujifilm Simulation from the list provided in the schema.
-         - Use 'Velvia' for landscapes/nature needing punch.
-         - Use 'Classic Chrome' for street/documentary.
-         - Use 'Astia' or 'Provia' for portraits.
-         - Use 'Acros' variants for black and white artistic shots.
-         - Use 'Nostalgic Neg' or 'Classic Neg' for emotional/retro vibes.
+      IMPORTANT INSTRUCTIONS:
+      1. **Do NOT use rigid rules** (e.g., do not automatically choose 'Velvia' just because it looks like a landscape).
+      2. **Think for yourself**: Look at the light (soft vs hard), the shadows, and the emotional tone.
+      3. **User Guidance**: The user may provide a hint. If they do, PRIORITIZE it above all else.
       
-      2. Determine the optimal adjustments (Brightness, Contrast, HSL, etc.) to enhance the image aesthetically.
-         - Suggest subtle HSL shifts to separate skin tones or enhance skies (e.g., shift Blue hue towards Cyan, or desaturate Greens).
-         - If the image looks flat, increase contrast.
-         - If highlights are blown out, lower the highlights value.
-      
-      Return valid JSON matching the schema.
+      User's Hint/Preference: "${userHint || 'No specific preference provided. Use your best artistic judgment.'}"
+
+      Available Film Styles & their Aesthetic Characteristics (Choose based on VIBE, not just subject):
+      - 'Provia': Standard, neutral, faithful, reliable. Good for when you want "real".
+      - 'Velvia': High saturation, high contrast, deep blacks. Dramatic, punchy, vivid.
+      - 'Astia': Soft highlights, gentle skin tones, lower contrast. Dreamy, portrait-friendly.
+      - 'Classic Chrome': Desaturated, hard shadows, slate-like skies. Documentary, street photography, moody, muted.
+      - 'Reala Ace': Realistic but with slightly punchier contrast than Provia. Sharp, modern.
+      - 'Classic Neg': Distinctive hard tonality. Cyan bias in shadows, reddish highlights. Retro, nostalgic, "film-like".
+      - 'Nostalgic Neg': Amber/Warm highlights, rich shadows. Vintage print look, golden hour feel.
+      - 'Eterna': Cinema style. Very flat, low contrast, desaturated. Moody, cinematic, sombre.
+      - 'Acros': Black & White.
+
+      Return a valid JSON object matching the schema.
     `;
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: {
-        role: "user",
         parts: [
           { text: prompt },
           { inlineData: { mimeType: "image/jpeg", data: base64Image } }
@@ -114,7 +119,7 @@ export const analyzeImage = async (base64Image: string): Promise<AIAnalysisResul
       config: {
         responseMimeType: "application/json",
         responseSchema: adjustmentsSchema,
-        temperature: 0.7,
+        temperature: 0.7, // Slightly higher creative freedom
       }
     });
 

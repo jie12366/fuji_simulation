@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Controls } from './components/Controls';
 import { CanvasView } from './components/CanvasView';
@@ -6,6 +5,7 @@ import { Adjustments, FilmSimulation, LUTData, HistogramData, HSLAdjustments } f
 import { generateFilmStyleLUT } from './services/lutGenerator';
 import { applyLUT } from './services/imageProcessor';
 import { analyzeImage, prepareImageForAI } from './services/aiService';
+import { loadDNG } from './services/dngLoader';
 
 const defaultHSL: HSLAdjustments = {
   red: { h: 0, s: 0, l: 0 },
@@ -16,11 +16,39 @@ const defaultHSL: HSLAdjustments = {
   magenta: { h: 0, s: 0, l: 0 },
 };
 
+// Helper: Fuzzy match AI string to our Enum
+const findMatchingFilm = (aiString: string): FilmSimulation | null => {
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const target = normalize(aiString);
+  
+  // 1. Direct match check
+  const values = Object.values(FilmSimulation);
+  for (const v of values) {
+      if (normalize(v).includes(target) || target.includes(normalize(v.split('/')[0]))) {
+          return v;
+      }
+  }
+
+  // 2. Keyword fallback
+  if (target.includes('chrome')) return FilmSimulation.ClassicChrome;
+  if (target.includes('velvia')) return FilmSimulation.Velvia;
+  if (target.includes('provia')) return FilmSimulation.Provia;
+  if (target.includes('astia')) return FilmSimulation.Astia;
+  if (target.includes('acros')) return FilmSimulation.Acros;
+  if (target.includes('nostalgic')) return FilmSimulation.NostalgicNeg;
+  if (target.includes('classicneg')) return FilmSimulation.ClassicNeg;
+  if (target.includes('reala')) return FilmSimulation.RealaAce;
+  if (target.includes('eterna')) return FilmSimulation.Eterna;
+
+  return null;
+};
+
 const App: React.FC = () => {
   const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null);
   const [currentFilm, setCurrentFilm] = useState<FilmSimulation>(FilmSimulation.Provia);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isLoadingFile, setIsLoadingFile] = useState<boolean>(false);
   
   // AI State
   const [isAIAnalyzing, setIsAIAnalyzing] = useState<boolean>(false);
@@ -47,24 +75,45 @@ const App: React.FC = () => {
 
   // --- Handlers ---
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          setOriginalImage(img);
-          setHistogramData(null);
-          setAiReasoning(null);
-        };
-        img.src = event.target?.result as string;
-      };
-      reader.readAsDataURL(file);
+      const name = file.name.toLowerCase();
+      setIsLoadingFile(true);
+
+      try {
+        let img: HTMLImageElement;
+        
+        if (name.endsWith('.dng') || name.endsWith('.tiff') || name.endsWith('.tif')) {
+            // Use specialized DNG loader
+            img = await loadDNG(file);
+        } else {
+            // Standard Image Loader
+            img = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const i = new Image();
+                    i.onload = () => resolve(i);
+                    i.onerror = reject;
+                    i.src = event.target?.result as string;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        setOriginalImage(img);
+        setHistogramData(null);
+        setAiReasoning(null);
+      } catch (err) {
+          console.error(err);
+          alert("Failed to load image. If using RAW/DNG, ensure it is uncompressed or standard DNG.");
+      } finally {
+          setIsLoadingFile(false);
+      }
     }
   };
 
-  const handleAIAutoAdjust = async () => {
+  const handleAIAutoAdjust = async (hint: string = '') => {
     if (!originalImage) return;
 
     try {
@@ -75,11 +124,13 @@ const App: React.FC = () => {
       const base64 = await prepareImageForAI(originalImage);
       
       // 2. Call Gemini API
-      const result = await analyzeImage(base64);
+      const result = await analyzeImage(base64, hint);
       
       // 3. Apply settings
-      if (result.recommendedFilm) {
-        setCurrentFilm(result.recommendedFilm);
+      // Fuzzy Match Film
+      const matchedFilm = findMatchingFilm(result.recommendedFilm);
+      if (matchedFilm) {
+        setCurrentFilm(matchedFilm);
       }
       
       // Merge AI adjustments with defaults for missing keys to be safe
@@ -131,7 +182,7 @@ const App: React.FC = () => {
     
     // Create a temporary link
     const link = document.createElement('a');
-    const filename = `fujisim-${currentFilm.replace(/\s/g, '_')}-${Date.now()}.jpg`;
+    const filename = `fujisim-${currentFilm.replace(/\s/g, '_').split('/')[0]}-${Date.now()}.jpg`;
     link.download = filename;
     link.href = canvas.toDataURL('image/jpeg', 0.90);
     link.click();
@@ -234,6 +285,19 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col lg:flex-row h-screen w-full bg-[#0a0a0a] text-gray-200 font-sans overflow-hidden">
       
+      {/* Loading Overlay */}
+      {isLoadingFile && (
+          <div className="fixed inset-0 z-[60] bg-black/80 flex items-center justify-center backdrop-blur-sm">
+              <div className="text-center">
+                   <svg className="animate-spin h-10 w-10 text-fuji-accent mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                   </svg>
+                   <p className="text-white font-bold tracking-wider">正在解析 RAW/DNG...</p>
+              </div>
+          </div>
+      )}
+
       {/* Left: Canvas Viewport */}
       <CanvasView 
         originalImage={originalImage}
