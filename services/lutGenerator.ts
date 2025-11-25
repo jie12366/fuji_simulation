@@ -6,52 +6,61 @@ const LUT_SIZE = 32;
 // --- Math Helpers ---
 
 const clamp = (v: number) => Math.max(0, Math.min(255, v));
-const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-const mix = (a: number, b: number, t: number) => a * (1 - t) + b * t;
-
-// --- White Balance ---
-// Simple Bradford-like gain adjustment
-const applyWB = (r: number, g: number, b: number, temp: number, tint: number): [number, number, number] => {
-  // Temp: -50 (Blue) to 50 (Yellow)
-  // Tint: -50 (Green) to 50 (Magenta)
-  
-  // Normalize inputs to reasonable gain factors
-  const t = temp / 100; // -0.5 to 0.5
-  const tn = tint / 100;
-
-  // Temperature (Warm/Cool)
-  let rGain = 1.0;
-  let gGain = 1.0;
-  let bGain = 1.0;
-
-  if (t > 0) {
-    // Warmer: Boost R, Lower B
-    rGain += t * 0.4;
-    bGain -= t * 0.2;
+// Soft Light Blend Mode (Photoshop formula)
+// This creates much more natural tinting than linear addition
+const softLight = (base: number, blend: number): number => {
+  const b = base / 255;
+  const l = blend / 255;
+  let r = 0;
+  if (l <= 0.5) {
+    r = b - (1 - 2 * l) * b * (1 - b);
   } else {
-    // Cooler: Boost B, Lower R
-    bGain -= t * 0.4; // t is negative, so this adds
-    rGain += t * 0.2; 
+    let d = (b <= 0.25) 
+      ? ((16 * b - 12) * b + 4) * b 
+      : Math.sqrt(b);
+    r = b + (2 * l - 1) * (d - b);
   }
+  return r * 255;
+};
 
-  // Tint (Green/Magenta)
-  if (tn > 0) {
-    // Magenta: Boost R+B, Lower G
-    rGain += tn * 0.1;
-    bGain += tn * 0.1;
-    gGain -= tn * 0.2;
-  } else {
-    // Green: Boost G, Lower R+B
-    gGain -= tn * 0.2; // tn negative
-    rGain += tn * 0.1; 
-    bGain += tn * 0.1;
+// --- Color Space & Correction ---
+
+// 3x3 Matrix Multiplication for Channel Crosstalk / Film Emulation
+// [ r ]   [ rr rg rb ] [ r ]
+// [ g ] = [ gr gg gb ] [ g ]
+// [ b ]   [ br bg bb ] [ b ]
+const applyMatrix = (r: number, g: number, b: number, m: number[]): [number, number, number] => {
+  const newR = r * m[0] + g * m[1] + b * m[2];
+  const newG = r * m[3] + g * m[4] + b * m[5];
+  const newB = r * m[6] + g * m[7] + b * m[8];
+  return [newR, newG, newB];
+};
+
+const applyWB = (r: number, g: number, b: number, temp: number, tint: number): [number, number, number] => {
+  // LMS-like adjustments are better, but simple gain works well for LUTs if gentle
+  const t = temp / 100; 
+  const tn = tint / 100;
+  
+  let rGain = 1.0 + (t > 0 ? t * 0.5 : t * 0.2); // Warm adds R
+  let bGain = 1.0 + (t < 0 ? -t * 0.5 : -t * 0.2); // Cool adds B
+  
+  // Tint: Green vs Magenta
+  let gGain = 1.0 - tn * 0.4; // Magenta reduces G
+  
+  // Normalize brightness to prevent blowout
+  const maxGain = Math.max(rGain, gGain, bGain);
+  if (maxGain > 1.2) {
+      rGain /= (maxGain * 0.85);
+      gGain /= (maxGain * 0.85);
+      bGain /= (maxGain * 0.85);
   }
 
   return [r * rGain, g * gGain, b * bGain];
 };
 
-// --- Color Grading ---
-// HSL to RGB helper for grading tints
+// --- Grading ---
+
+// HSL to RGB helper
 const hslToRgb = (h: number, s: number, l: number): [number, number, number] => {
   const c = (1 - Math.abs(2 * l - 1)) * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
@@ -65,44 +74,36 @@ const hslToRgb = (h: number, s: number, l: number): [number, number, number] => 
   else if (240 <= h && h < 300) { r = x; g = 0; b = c; }
   else if (300 <= h && h < 360) { r = c; g = 0; b = x; }
   
-  return [(r + m), (g + m), (b + m)];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
 };
 
 const applyGrading = (r: number, g: number, b: number, grading: GradingAdjustments): [number, number, number] => {
-  // If no grading, return early
   if (grading.shadows.s === 0 && grading.midtones.s === 0 && grading.highlights.s === 0) {
     return [r, g, b];
   }
 
-  // Luma (0-1)
   const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 
-  // Calculate masks using smoothstep-like curves
-  // Shadows: 1.0 at black, fading to 0.0 at 0.5
-  const shadowMask = 1.0 - Math.min(1, Math.max(0, (luma * 2.5))); 
-  
-  // Highlights: 0.0 at 0.5, fading to 1.0 at white
-  const highlightMask = Math.min(1, Math.max(0, (luma - 0.45) * 2));
-
-  // Midtones: The remainder, peaked at 0.5
-  const midtoneMask = Math.max(0, 1.0 - shadowMask - highlightMask);
+  // Smoother Masks
+  const shadowMask = Math.max(0, (1 - luma * 1.8)); 
+  const highlightMask = Math.max(0, (luma - 0.4) * 1.8);
+  const midtoneMask = Math.max(0, 1 - Math.abs(luma - 0.5) * 2.2);
 
   const applyTint = (currR: number, currG: number, currB: number, grade: {h: number, s: number}, mask: number) => {
-    if (grade.s === 0 || mask <= 0) return [currR, currG, currB];
+    if (grade.s === 0 || mask <= 0.01) return [currR, currG, currB];
     
-    // Get target tint color (at 50% luminance relative)
-    const [tr, tg, tb] = hslToRgb(grade.h, 1.0, 0.5);
+    // Tint color at 50% luminance
+    const [tr, tg, tb] = hslToRgb(grade.h, 1.0, 0.5); 
     
-    // Blend mode: Soft Color/Overlay hybrid simulation
-    // We offset the current channel towards the tint channel
-    const amount = (grade.s / 100) * mask * 0.3; // Strength scaler
+    // Mix using Soft Light instead of additive
+    const strength = (grade.s / 100) * mask; 
     
-    // Additive tint (simulates Color Balance)
-    const nr = currR + (tr * 255 - 128) * amount;
-    const ng = currG + (tg * 255 - 128) * amount;
-    const nb = currB + (tb * 255 - 128) * amount;
+    // Lerp between current and blended
+    const finalR = currR * (1 - strength) + softLight(currR, tr) * strength;
+    const finalG = currG * (1 - strength) + softLight(currG, tg) * strength;
+    const finalB = currB * (1 - strength) + softLight(currB, tb) * strength;
 
-    return [nr, ng, nb];
+    return [finalR, finalG, finalB];
   };
 
   let [or, og, ob] = [r, g, b];
@@ -113,39 +114,65 @@ const applyGrading = (r: number, g: number, b: number, grading: GradingAdjustmen
   return [or, og, ob];
 };
 
-
-const applyCurve = (val: number, contrast: number, liftShadows: number = 0, crushBlacks: number = 0): number => {
-  let x = clamp(val) / 255;
-  if (liftShadows > 0) x = x + (1 - x) * liftShadows * 0.2 * Math.pow(1 - x, 2);
-  if (crushBlacks > 0) {
-     x = Math.max(0, x - crushBlacks * 0.05);
-     x = x * (1 / (1 - crushBlacks * 0.05));
-  }
-  let y = x;
-  if (contrast !== 0) {
-    const k = 1 + Math.abs(contrast);
+// --- Tone Curves (Sigmoid) ---
+const applySCurve = (val: number, contrast: number): number => {
+    // contrast -100 to 100
+    // Normalized input
+    const u = val / 255;
+    // Sigmoid factor
+    const k = (contrast + 100) / 100; // 0 to 2
+    
+    if (contrast === 0) return val;
+    
+    // Simple S-curve formula
+    // (1 / (1 + exp(-slope * (x - 0.5)))) scaled
+    // Approximated:
+    let ret = u;
     if (contrast > 0) {
-      if (x < 0.5) y = 0.5 * Math.pow(2 * x, k);
-      else y = 1 - 0.5 * Math.pow(2 * (1 - x), k);
+        // Steep S
+        const c = contrast / 100 * 2.5; 
+        ret = (u - 0.5) * (1 + c) + 0.5;
+        // Clamp smoothly? Simple mix usually better for performance
+        // Let's use cosine approximation for nicer shoulder/toe
+        ret = u + (Math.cos((1-u)*Math.PI) + 1)/2 * (u > 0.5 ? 1 : -1) * (contrast/200);
+        
+        // Simpler power curve for strong contrast
+        if (u < 0.5) ret = 0.5 * Math.pow(2 * u, 1 + contrast/200);
+        else ret = 1 - 0.5 * Math.pow(2 * (1 - u), 1 + contrast/200);
+
     } else {
-      y = mix(x, (Math.sin((x - 0.5) * Math.PI) + 1) / 2, Math.abs(contrast) * 0.5);
+        // Flat (Fade)
+        ret = (u - 0.5) / (1 + Math.abs(contrast)/100) + 0.5;
     }
-  }
-  return clamp01(y) * 255;
+    return ret * 255;
 };
 
-const adjustSaturation = (r: number, g: number, b: number, amount: number) => {
+// Natural Vibrance (Smarter Saturation)
+const applyVibrance = (r: number, g: number, b: number, amount: number): [number, number, number] => {
+  if (amount === 0) return [r, g, b];
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const sat = max === 0 ? 0 : 1 - (min / max);
+  
+  // Boost low saturation pixels more than high saturation ones
+  const amt = amount / 100;
+  
+  // Mask: 1.0 for greyscale, 0.0 for pure color
+  const mask = (1 - sat); 
+  
+  // Lerp towards fully saturated version of this hue? 
+  // Standard simple approach:
   const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-  return [
-    luma + (r - luma) * (1 + amount),
-    luma + (g - luma) * (1 + amount),
-    luma + (b - luma) * (1 + amount)
-  ];
-};
+  const factor = 1 + (amt * mask); 
+  
+  const nr = luma + (r - luma) * factor;
+  const ng = luma + (g - luma) * factor;
+  const nb = luma + (b - luma) * factor;
+  
+  return [nr, ng, nb];
+}
 
-const toGrayscale = (r: number, g: number, b: number, weights: [number, number, number]) => {
-  return r * weights[0] + g * weights[1] + b * weights[2];
-};
+// --- MAIN GENERATOR ---
 
 export const generateFilmStyleLUT = (
     type: FilmSimulation, 
@@ -162,118 +189,161 @@ export const generateFilmStyleLUT = (
         const gBase = gIdx * step;
         const bBase = bIdx * step;
 
-        // 1. Apply White Balance FIRST (Sensor level correction simulation)
+        // 1. White Balance
         let [r, g, b] = applyWB(rBase, gBase, bBase, wb.temp, wb.tint);
 
         const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        const lumaNorm = luma / 255;
 
-        // 2. Film Simulation Curves
+        // 2. Film Stock Emulation (Crosstalk Matrices + Curves)
         switch (type) {
           case FilmSimulation.Provia: {
-            r = applyCurve(r, 0.1);
-            g = applyCurve(g, 0.1);
-            b = applyCurve(b, 0.1);
-            const sat = adjustSaturation(r, g, b, 0.1);
-            r = sat[0]; g = sat[1]; b = sat[2];
+            // Standard: Slight pop, clean whites
+            r = applySCurve(r, 10);
+            g = applySCurve(g, 10);
+            b = applySCurve(b, 15); // Slight blue cool
+            [r, g, b] = applyVibrance(r, g, b, 10);
             break;
           }
           case FilmSimulation.Velvia: {
-            const sat = adjustSaturation(r, g, b, 0.4);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            r = applyCurve(r, 0.25);
-            g = applyCurve(g, 0.25);
-            b = applyCurve(b, 0.25);
-            if (b > r && b > g) r *= 1.05;
-            if (luma > 150) r *= 1.02;
+            // Vivid: Magenta bias in shadows, High saturation
+            const m = [
+                1.05, -0.05, 0.0,
+                -0.05, 1.1, -0.05,
+                0.0, -0.05, 1.05
+            ];
+            [r, g, b] = applyMatrix(r, g, b, m);
+            r = applySCurve(r, 20);
+            g = applySCurve(g, 20);
+            b = applySCurve(b, 25);
+            [r, g, b] = applyVibrance(r, g, b, 30); // Use Vibrance instead of flat Saturation
             break;
           }
           case FilmSimulation.Astia: {
-            const curveVal = (v: number) => (v > 128) ? applyCurve(v, 0.05) : applyCurve(v, 0.15);
-            r = curveVal(r); g = curveVal(g); b = curveVal(b);
-            const sat = adjustSaturation(r, g, b, 0.15);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            if (r > g && g > b) { r = r * 1.02; g = g * 1.01; }
+            // Soft: Protect skin tones (red/yellow), soft contrast
+            r = applySCurve(r, 5);
+            g = applySCurve(g, 5);
+            b = applySCurve(b, 5);
+            // Slight warm push in midtones
+            if (luma > 50 && luma < 200) {
+                r *= 1.02; g *= 1.01;
+            }
+            [r, g, b] = applyVibrance(r, g, b, 10);
             break;
           }
           case FilmSimulation.ClassicChrome: {
-            const sat = adjustSaturation(r, g, b, -0.25);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            r = applyCurve(r, 0.15, 0, 0.1);
-            g = applyCurve(g, 0.15, 0, 0.1);
-            b = applyCurve(b, 0.15, 0, 0.1);
-            if (b > g && b > r) g = mix(g, b, 0.15); 
-            if (r > g && r > b) r *= 0.95;
+            // Docu: Low Sat, Hard Shadow, Cyan Sky
+            // Matrix to mute colors and shift blue to cyan
+            const m = [
+                0.95, 0.05, 0.0,
+                0.0, 0.95, 0.05,
+                0.05, 0.1, 0.85
+            ];
+            [r, g, b] = applyMatrix(r, g, b, m);
+            
+            // Hard S-curve
+            r = applySCurve(r, 20);
+            g = applySCurve(g, 20);
+            b = applySCurve(b, 20);
+
+            // Pull saturation down globally
+            [r, g, b] = applyVibrance(r, g, b, -15);
+            
+            // Shift Highlights slightly warm, Shadows cool
+            const t = luma / 255;
+            r += (1-t) * -5 + t * 5; 
+            b += (1-t) * 5 + t * -5;
             break;
           }
           case FilmSimulation.RealaAce: {
-            const sat = adjustSaturation(r, g, b, 0.05);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            r = applyCurve(r, 0.2);
-            g = applyCurve(g, 0.2);
-            b = applyCurve(b, 0.2);
+            // True to life, slightly punchy
+            const m = [
+                1.0, 0.02, -0.02,
+                0.01, 1.0, -0.01,
+                -0.01, 0.01, 1.0
+            ];
+            [r, g, b] = applyMatrix(r, g, b, m);
+            r = applySCurve(r, 15);
+            g = applySCurve(g, 15);
+            b = applySCurve(b, 15);
             break;
           }
           case FilmSimulation.ClassicNeg: {
-            r = applyCurve(r, 0.25);
-            g = applyCurve(g, 0.25);
-            b = applyCurve(b, 0.25);
-            const t = lumaNorm;
-            r *= mix(0.9, 1.05, t);
-            g *= mix(1.02, 0.98, t);
-            b *= mix(1.02, 0.95, t);
-            r = Math.max(0, r - 10);
-            g = Math.max(0, g - 10);
-            b = Math.max(0, b - 10);
+            // Unique: High contrast, dim colors.
+            // Cyan-ish shadows, Reddish highlights
+            // Drastic Curve
+            const negCurve = (v: number) => {
+                const u = v/255;
+                // Double sigmoid
+                return (u < 0.5 ? 2*u*u : 1 - 2*(1-u)*(1-u)) * 255;
+            };
+            r = negCurve(r); g = negCurve(g); b = negCurve(b);
+
+            // Strong crosstalk
+            const m = [
+                1.0, -0.1, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, -0.1, 1.1
+            ];
+            [r, g, b] = applyMatrix(r, g, b, m);
             break;
           }
           case FilmSimulation.NostalgicNeg: {
-            r = applyCurve(r, 0.15);
-            g = applyCurve(g, 0.15);
-            b = applyCurve(b, 0.15);
-            if (luma > 100) {
-                const factor = (luma - 100) / 155;
-                r += 15 * factor;
-                g += 10 * factor;
-            }
-            const sat = adjustSaturation(r, g, b, 0.15);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            break;
+             // Amber highlights, rich shadows
+             // Lift shadows
+             r = Math.min(255, r + 15 * (1 - luma/255)); 
+             g = Math.min(255, g + 10 * (1 - luma/255));
+             
+             // Soft curve
+             r = applySCurve(r, 10);
+             g = applySCurve(g, 10);
+             b = applySCurve(b, 10);
+
+             // Amber tint in highlights
+             if (luma > 128) {
+                 const factor = (luma - 128) / 127;
+                 r += 10 * factor;
+                 b -= 5 * factor;
+             }
+             break;
           }
           case FilmSimulation.Eterna: {
-            const eternaCurve = (v: number) => {
-               let y = v / 255;
-               y = 0.1 + y * 0.85; 
-               y = y * (1.05 - y * 0.1); 
-               return clamp(y * 255);
-            };
-            r = eternaCurve(r); g = eternaCurve(g); b = eternaCurve(b);
-            const sat = adjustSaturation(r, g, b, -0.35);
-            r = sat[0]; g = sat[1]; b = sat[2];
-            if (luma < 100) { r *= 0.98; g *= 1.01; b *= 1.01; }
+            // Cinema: Flat, low saturation, wide dynamic range
+            r = applySCurve(r, -20); // Flat contrast
+            g = applySCurve(g, -20);
+            b = applySCurve(b, -20);
+            [r, g, b] = applyVibrance(r, g, b, -25);
+            
+            // Teal shadow bias
+            if (luma < 100) {
+                g += 5; b += 5;
+            }
             break;
           }
           case FilmSimulation.Acros: {
-            const grey = toGrayscale(r, g, b, [0.3, 0.59, 0.11]);
-            const val = applyCurve(grey, 0.2);
+            const grey = r * 0.299 + g * 0.587 + b * 0.114;
+            // Sigmoid for rich blacks
+            const val = applySCurve(grey, 25);
             r = val; g = val; b = val;
             break;
           }
           case FilmSimulation.AcrosYe: {
-            const grey = toGrayscale(r, g, b, [0.34, 0.56, 0.1]);
-            const val = applyCurve(grey, 0.2);
-            r = val; g = val; b = val;
-            break;
+             // Yellow filter: Darkens blue skies
+             const grey = r * 0.34 + g * 0.56 + b * 0.10; // Less Blue contrib
+             const val = applySCurve(grey, 30);
+             r = val; g = val; b = val;
+             break;
           }
           case FilmSimulation.AcrosR: {
-            const grey = toGrayscale(r, g, b, [0.5, 0.4, 0.1]);
-            const val = applyCurve(grey, 0.25);
+            // Red filter: Dramatic skies, bright skin
+            const grey = r * 0.50 + g * 0.40 + b * 0.10;
+            const val = applySCurve(grey, 35);
             r = val; g = val; b = val;
             break;
           }
           case FilmSimulation.AcrosG: {
-            const grey = toGrayscale(r, g, b, [0.25, 0.65, 0.1]);
-            const val = applyCurve(grey, 0.2);
+            // Green filter: Good for skin tones, foliage
+            const grey = r * 0.25 + g * 0.65 + b * 0.10;
+            const val = applySCurve(grey, 25);
             r = val; g = val; b = val;
             break;
           }
@@ -286,9 +356,10 @@ export const generateFilmStyleLUT = (
           }
         }
 
-        // 3. Apply Color Grading (Post-Film)
+        // 3. Color Grading (Soft Light Blend)
         [r, g, b] = applyGrading(r, g, b, grading);
 
+        // Clamp final
         r = clamp(r);
         g = clamp(g);
         b = clamp(b);
