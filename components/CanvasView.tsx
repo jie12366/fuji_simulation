@@ -1,3 +1,4 @@
+
 import React, { useRef, useEffect, useState } from 'react';
 
 interface CanvasViewProps {
@@ -23,7 +24,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
   // --- Initialization ---
   useEffect(() => {
-    if (originalImage && originalCanvasRef.current) {
+    if (originalImage && originalCanvasRef.current && containerRef.current) {
       const canvas = originalCanvasRef.current;
       const ctx = canvas.getContext('2d');
       if (ctx) {
@@ -31,8 +32,19 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
         canvas.height = originalImage.height;
         ctx.drawImage(originalImage, 0, 0);
       }
-      // Reset view on new image
-      setScale(1);
+      
+      // Auto Fit Logic
+      const containerW = containerRef.current.clientWidth;
+      const containerH = containerRef.current.clientHeight;
+      const imgW = originalImage.width;
+      const imgH = originalImage.height;
+      
+      // Calculate scale to fit within 90% of the container
+      const scaleX = (containerW * 0.9) / imgW;
+      const scaleY = (containerH * 0.9) / imgH;
+      const bestFit = Math.min(scaleX, scaleY);
+
+      setScale(bestFit);
       setPosition({ x: 0, y: 0 });
     }
   }, [originalImage, originalCanvasRef]);
@@ -43,7 +55,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
     e.preventDefault();
     const zoomSensitivity = 0.001;
     const delta = -e.deltaY * zoomSensitivity;
-    const newScale = Math.min(Math.max(0.1, scale + delta * scale * 5), 10); // 0.1x to 10x zoom
+    const newScale = Math.min(Math.max(0.01, scale + delta * scale * 5), 20); // Wider zoom range
     setScale(newScale);
   };
 
@@ -86,7 +98,16 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
   // Fit to screen
   const handleFit = () => {
-      setScale(1);
+      if (!originalImage || !containerRef.current) return;
+      const containerW = containerRef.current.clientWidth;
+      const containerH = containerRef.current.clientHeight;
+      const imgW = originalImage.width;
+      const imgH = originalImage.height;
+      const scaleX = (containerW * 0.9) / imgW;
+      const scaleY = (containerH * 0.9) / imgH;
+      const bestFit = Math.min(scaleX, scaleY);
+
+      setScale(bestFit);
       setPosition({ x: 0, y: 0 });
   };
 
@@ -127,10 +148,10 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
       {/* Info HUD */}
       <div className="absolute top-6 left-6 z-30 flex gap-2">
-         <div className="bg-black/80 backdrop-blur text-white text-xs font-mono px-3 py-1.5 rounded border border-gray-800">
+         <div className="bg-black/80 backdrop-blur text-white text-xs font-mono px-3 py-1.5 rounded border border-gray-800 shadow-lg">
              缩放: {Math.round(scale * 100)}%
          </div>
-         <button onClick={handleFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors">
+         <button onClick={handleFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors shadow-lg">
              适应屏幕
          </button>
       </div>

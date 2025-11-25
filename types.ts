@@ -1,3 +1,4 @@
+
 export enum FilmSimulation {
   Provia = 'PROVIA / 标准模式',
   Velvia = 'Velvia / 鲜艳模式',
@@ -29,17 +30,39 @@ export interface HSLAdjustments {
   magenta: HSLChannel;
 }
 
+export interface ColorGrade {
+  h: number; // 0 - 360
+  s: number; // 0 - 100
+}
+
+export interface GradingAdjustments {
+  shadows: ColorGrade;
+  midtones: ColorGrade;
+  highlights: ColorGrade;
+}
+
 export interface Adjustments {
+  // Basic Tone
   brightness: number; // -100 to 100
   contrast: number;   // -100 to 100
   saturation: number; // -100 to 100
   highlights: number; // -100 to 100
   shadows: number;    // -100 to 100
   
-  // Texture
+  // White Balance
+  whiteBalance: {
+    temp: number; // -50 to 50 (Blue <-> Amber)
+    tint: number; // -50 to 50 (Green <-> Magenta)
+  };
+
+  // Color Grading (Split Toning)
+  grading: GradingAdjustments;
+
+  // Texture & Detail
   grainAmount: number; // 0 to 100
   grainSize: number;   // 1 to 5 (Roughness)
   vignette: number;    // 0 to 100
+  sharpening: number;  // 0 to 100 (Unsharp Mask)
   
   // Optical Effects
   halation: number;    // 0 to 100 (Bloom/Glow strength)
