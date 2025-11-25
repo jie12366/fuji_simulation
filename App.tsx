@@ -2,29 +2,41 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Controls } from './components/Controls';
 import { CanvasView } from './components/CanvasView';
-import { Adjustments, FilmSimulation, LUTData } from './types';
+import { Adjustments, FilmSimulation, LUTData, HistogramData, HSLAdjustments } from './types';
 import { generateFilmStyleLUT } from './services/lutGenerator';
 import { applyLUT } from './services/imageProcessor';
 
+const defaultHSL: HSLAdjustments = {
+  red: { h: 0, s: 0, l: 0 },
+  yellow: { h: 0, s: 0, l: 0 },
+  green: { h: 0, s: 0, l: 0 },
+  cyan: { h: 0, s: 0, l: 0 },
+  blue: { h: 0, s: 0, l: 0 },
+  magenta: { h: 0, s: 0, l: 0 },
+};
+
 const App: React.FC = () => {
-  // --- State ---
   const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null);
   const [currentFilm, setCurrentFilm] = useState<FilmSimulation>(FilmSimulation.Provia);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
+  
   const [adjustments, setAdjustments] = useState<Adjustments>({
     brightness: 0,
     contrast: 0,
     saturation: 0,
     highlights: 0,
-    shadows: 0
+    shadows: 0,
+    grainAmount: 0,
+    grainSize: 2,
+    vignette: 0,
+    halation: 0,
+    hsl: { ...defaultHSL }
   });
 
-  // --- Refs ---
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement>(null);
-  
-  // Cache the LUT data so we don't regenerate it unnecessarily on slider moves (except film change)
   const currentLUTData = useRef<LUTData | null>(null);
 
   // --- Handlers ---
@@ -37,10 +49,12 @@ const App: React.FC = () => {
         const img = new Image();
         img.onload = () => {
           setOriginalImage(img);
-          // Reset adjustments on new image
           setAdjustments({
-            brightness: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0
+            brightness: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0,
+            grainAmount: 0, grainSize: 2, vignette: 0, halation: 0,
+            hsl: JSON.parse(JSON.stringify(defaultHSL)) // Deep copy reset
           });
+          setHistogramData(null);
         };
         img.src = event.target?.result as string;
       };
@@ -52,16 +66,27 @@ const App: React.FC = () => {
     setAdjustments(prev => ({ ...prev, [key]: val }));
   };
 
+  const handleHSLChange = (color: keyof HSLAdjustments, param: 'h'|'s'|'l', val: number) => {
+    setAdjustments(prev => ({
+      ...prev,
+      hsl: {
+        ...prev.hsl,
+        [color]: {
+          ...prev.hsl[color],
+          [param]: val
+        }
+      }
+    }));
+  };
+
   const handleFilmChange = (film: FilmSimulation) => {
     setCurrentFilm(film);
   };
 
   // --- Processing Engine ---
 
-  // 1. Regenerate LUT when film type changes
   useEffect(() => {
     setIsProcessing(true);
-    // Use timeout to allow UI to update to "Processing" state before heavy calculation
     const timer = setTimeout(() => {
         currentLUTData.current = generateFilmStyleLUT(currentFilm);
         triggerProcessing();
@@ -69,7 +94,6 @@ const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [currentFilm]);
 
-  // 2. Main Processing Trigger
   const triggerProcessing = useCallback(() => {
     if (!originalImage || !originalCanvasRef.current || !processedCanvasRef.current || !currentLUTData.current) {
         setIsProcessing(false);
@@ -78,84 +102,44 @@ const App: React.FC = () => {
 
     const origCtx = originalCanvasRef.current.getContext('2d');
     const procCtx = processedCanvasRef.current.getContext('2d');
-    
     if (!origCtx || !procCtx) return;
 
-    // Get original pixels
     const width = originalCanvasRef.current.width;
     const height = originalCanvasRef.current.height;
-    
-    // Safety check for zero size
     if (width === 0 || height === 0) return;
 
     const pixelData = origCtx.getImageData(0, 0, width, height);
 
-    // Apply LUT Engine
-    const processedData = applyLUT(
+    // 1. Apply Pixel Math (LUT, Color, Grain)
+    const { imageData: processedData, histogram } = applyLUT(
         pixelData, 
         currentLUTData.current, 
         adjustments, 
         intensity
     );
 
-    // Update canvas
+    setHistogramData(histogram);
     processedCanvasRef.current.width = width;
     processedCanvasRef.current.height = height;
     procCtx.putImageData(processedData, 0, 0);
     
-    setIsProcessing(false);
-  }, [originalImage, adjustments, intensity]);
-
-  // Trigger processing when adjustments or intensity change
-  // We debounce slightly to avoid stuttering while dragging sliders
-  useEffect(() => {
-    if (!currentLUTData.current) {
-         currentLUTData.current = generateFilmStyleLUT(currentFilm);
-    }
-    const timer = setTimeout(() => {
-        triggerProcessing();
-    }, 50); // 50ms debounce
-    return () => clearTimeout(timer);
-  }, [adjustments, intensity, triggerProcessing]);
-
-
-  const handleDownload = () => {
-    if (processedCanvasRef.current) {
-      const link = document.createElement('a');
-      
-      // Sanitized filename from enum, removing "/" and chinese chars roughly for file system safety
-      // Example: "PROVIA / 标准" -> "provia"
-      // We grab the first part before "/"
-      const rawName = currentFilm.split('/')[0] || 'photo';
-      const safeName = rawName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-
-      link.download = `fujisim_${safeName}_${Date.now()}.png`;
-      link.href = processedCanvasRef.current.toDataURL('image/png', 1.0);
-      link.click();
-    }
-  };
-
-  return (
-    <div className="flex flex-col lg:flex-row h-screen w-screen bg-fuji-900 text-gray-100 font-sans overflow-hidden">
-      <Controls 
-        currentFilm={currentFilm}
-        onFilmChange={handleFilmChange}
-        adjustments={adjustments}
-        onAdjustmentChange={handleAdjustmentChange}
-        filterIntensity={intensity}
-        onIntensityChange={setIntensity}
-        onUpload={handleUpload}
-        onDownload={handleDownload}
-        isProcessing={isProcessing}
-      />
-      
-      <CanvasView 
-        originalImage={originalImage}
-        originalCanvasRef={originalCanvasRef}
-        processedCanvasRef={processedCanvasRef}
-      />
-    </div>
-  );
-};
-
-export default App;
+    // 2. Apply Post-Processing Effects (Halation/Bloom)
+    // We do this via Canvas Composition API for performance (GPU accelerated blur)
+    if (adjustments.halation > 0) {
+        const halationStr = adjustments.halation / 100;
+        
+        // Create temp canvas for highlight extraction
+        const tempCanvas = document.createElement('canvas');
+        // Downscale significantly for better blur performance and "bloomy" look
+        const scale = 0.25; 
+        tempCanvas.width = width * scale;
+        tempCanvas.height = height * scale;
+        const tCtx = tempCanvas.getContext('2d');
+        
+        if (tCtx) {
+            // Draw current processed image
+            tCtx.drawImage(processedCanvasRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+            
+            // Thresholding (High pass filter essentially)
+            // We use globalCompositeOperation to keep only bright parts? 
+            // Hard to do purely
