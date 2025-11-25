@@ -15,7 +15,6 @@ const mulberry32 = (a: number) => {
 }
 
 // RGB <-> HSL Conversions
-// Optimized for performance inside loops
 function rgbToHsl(r: number, g: number, b: number, out: number[]) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -56,14 +55,22 @@ function hslToRgb(h: number, s: number, l: number, out: number[]) {
   out[0] = r * 255; out[1] = g * 255; out[2] = b * 255;
 }
 
-// Determine weight of a hue against a target center hue
+// Optimized Weight Function using Smoothstep
 // range is how wide the influence is (degrees)
-function getHueWeight(hue: number, target: number, range: number = 30): number {
+function getHueWeight(hue: number, target: number, range: number = 45): number {
   let diff = Math.abs(hue - target);
+  // Handle Hue Wrap-around (e.g. 350 vs 10 should be dist 20)
   if (diff > 180) diff = 360 - diff;
-  if (diff > range) return 0;
-  // Smooth falloff
-  return Math.pow(Math.cos((diff / range) * (Math.PI / 2)), 2);
+  
+  if (diff >= range) return 0;
+  
+  // Normalize distance to 0..1 (0 = center, 1 = edge)
+  const t = diff / range;
+  
+  // Smoothstep (Hermite interpolation): 3t^2 - 2t^3 inverted
+  // We want 1.0 at center, 0.0 at edge
+  const v = 1 - t;
+  return v * v * (3 - 2 * v);
 }
 
 function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCache: number[], rgbCache: number[]): [number, number, number] {
@@ -72,40 +79,44 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
   let [h, s, l] = hslCache;
 
   // 2. Calculate adjustments based on Hue
-  // Centers: Red=0/360, Yellow=60, Green=120, Cyan=180, Blue=240, Magenta=300
-  
-  // We sum up the deltas
   let dH = 0, dS = 0, dL = 0;
   let totalWeight = 0;
 
   const processChannel = (targetHue: number, channel: HSLChannel) => {
     if (channel.h === 0 && channel.s === 0 && channel.l === 0) return;
-    const w = getHueWeight(h, targetHue, 45); // 45 degree overlap
+    
+    const w = getHueWeight(h, targetHue, 45); // 45 degree overlap for smooth blending
     if (w > 0) {
       dH += channel.h * w;
-      dS += (channel.s / 100) * w; // Map -100..100 to -1..1
+      dS += (channel.s / 100) * w; 
       dL += (channel.l / 100) * w;
-      totalWeight += w;
+      totalWeight += w; // Track influence to normalize if needed, or just let them stack softly
     }
   };
 
-  processChannel(0, hslAdj.red);
-  processChannel(360, hslAdj.red); // Wrap around for red
+  // FIX: Only call Red once at 0 degrees. The getHueWeight handles the 360 wrap logic.
+  processChannel(0, hslAdj.red);     
   processChannel(60, hslAdj.yellow);
   processChannel(120, hslAdj.green);
   processChannel(180, hslAdj.cyan);
   processChannel(240, hslAdj.blue);
   processChannel(300, hslAdj.magenta);
 
-  if (totalWeight > 0) {
-    // Apply deltas
+  // Apply deltas if influenced
+  // We check Math.abs to avoid tiny floating point noise
+  if (Math.abs(dH) > 0.01 || Math.abs(dS) > 0.001 || Math.abs(dL) > 0.001) {
     h = (h + dH + 360) % 360;
-    s = Math.max(0, Math.min(1, s * (1 + dS))); // Scaling saturation
-    // Luminance is additive/subtractive but clamped
-    // We use a soft gamma-like shift for luminance to look better
-    if (dL !== 0) {
-        l = Math.max(0, Math.min(1, l + (dL * 0.5))); 
+    s = Math.max(0, Math.min(1, s * (1 + dS))); 
+    
+    // Luminance blending: Overlay style for natural feel
+    if (dL > 0) {
+       // Brighten
+       l = l + (1 - l) * dL * 0.5;
+    } else {
+       // Darken
+       l = l + l * dL * 0.5;
     }
+    l = Math.max(0, Math.min(1, l));
 
     // 3. HSL -> RGB
     hslToRgb(h, s, l, rgbCache);
@@ -115,7 +126,7 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
   return [r, g, b];
 }
 
-// Helper for simple linear interpolation
+// Linear Interpolation
 const lerp = (a: number, b: number, t: number) => a + t * (b - a);
 
 export const applyLUT = (
@@ -130,39 +141,31 @@ export const applyLUT = (
   const output = new ImageData(new Uint8ClampedArray(data), width, height);
   const outData = output.data;
 
-  // Histogram buckets
   const histR = new Array(256).fill(0);
   const histG = new Array(256).fill(0);
   const histB = new Array(256).fill(0);
 
-  // Pre-calculate adjustment factors
+  // Constants
   const brightness = adjustments.brightness;
   const contrastFactor = (259 * (adjustments.contrast + 255)) / (255 * (259 - adjustments.contrast));
   const saturationFactor = 1 + (adjustments.saturation / 100);
   const shadowLift = adjustments.shadows * 0.5;
   const highlightDrop = adjustments.highlights * 0.5;
   
-  // Grain setup
   const grainAmount = adjustments.grainAmount / 3; 
   const hasGrain = grainAmount > 0;
   
-  // Vignette setup
   const vignetteStr = adjustments.vignette / 100;
   const centerX = width / 2;
   const centerY = height / 2;
   const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
 
-  // LUT Scale Factors
   const LUT_MAX = LUT_SIZE - 1;
   const scale = LUT_MAX / 255;
 
-  // Random generator
   const random = mulberry32(1337);
-
-  // Check if HSL is active (optimization)
   const hasHSL = Object.values(adjustments.hsl).some(c => c.h !== 0 || c.s !== 0 || c.l !== 0);
   
-  // Reusable Arrays for inner loop to avoid GC
   const hslCache = [0,0,0];
   const rgbCache = [0,0,0];
 
@@ -175,161 +178,110 @@ export const applyLUT = (
       let b = data[i + 2];
       const a = data[i + 3];
 
-      // --- 0. Advanced HSL (Before other adjustments for better color targeting) ---
+      // --- 1. HSL Processing (Pre-LUT) ---
       if (hasHSL) {
         const newRgb = applyHSL(r, g, b, adjustments.hsl, hslCache, rgbCache);
         r = newRgb[0]; g = newRgb[1]; b = newRgb[2];
       }
 
-      // --- 1. Basic Adjustments ---
-      
-      // Brightness
-      if (brightness !== 0) {
-        r += brightness; g += brightness; b += brightness;
-      }
+      // --- 2. Basic Adjustments (Contrast/Bright) ---
+      if (brightness !== 0) { r += brightness; g += brightness; b += brightness; }
 
-      // Contrast
       if (contrastFactor !== 1) {
         r = contrastFactor * (r - 128) + 128;
         g = contrastFactor * (g - 128) + 128;
         b = contrastFactor * (b - 128) + 128;
       }
 
-      // Clamp
+      // Clamp intermediate
       r = Math.max(0, Math.min(255, r));
       g = Math.max(0, Math.min(255, g));
       b = Math.max(0, Math.min(255, b));
 
       const luma = 0.299 * r + 0.587 * g + 0.114 * b;
 
-      // Saturation (Global)
       if (saturationFactor !== 1) {
         r = luma + (r - luma) * saturationFactor;
         g = luma + (g - luma) * saturationFactor;
         b = luma + (b - luma) * saturationFactor;
       }
 
-      // Shadows / Highlights
       if (shadowLift !== 0) {
-        const mask = 1 - (luma / 255); 
-        const lift = Math.max(0, mask) * shadowLift;
+        const lift = Math.max(0, 1 - (luma / 255)) * shadowLift;
         r += lift; g += lift; b += lift;
       }
       if (highlightDrop !== 0) {
-        const mask = Math.max(0, (luma - 128) / 128);
-        const drop = mask * highlightDrop;
+        const drop = Math.max(0, (luma - 128) / 128) * highlightDrop;
         r += drop; g += drop; b += drop;
       }
 
-      // Clamp before LUT
       r = Math.max(0, Math.min(255, r));
       g = Math.max(0, Math.min(255, g));
       b = Math.max(0, Math.min(255, b));
 
-      // --- 2. 3D LUT Lookup with Trilinear Interpolation ---
+      // --- 3. 3D LUT (Trilinear Interpolation) ---
       
-      // Calculate float positions in LUT space
       const rPos = r * scale;
       const gPos = g * scale;
       const bPos = b * scale;
 
-      // Lower indices
       const r0 = Math.floor(rPos);
       const g0 = Math.floor(gPos);
       const b0 = Math.floor(bPos);
-
-      // Upper indices (clamped)
+      
       const r1 = Math.min(LUT_MAX, r0 + 1);
       const g1 = Math.min(LUT_MAX, g0 + 1);
       const b1 = Math.min(LUT_MAX, b0 + 1);
 
-      // Fractional parts (weights for interpolation)
       const dr = rPos - r0;
       const dg = gPos - g0;
       const db = bPos - b0;
 
-      // Pre-calculate index offsets
-      const z0_offset = b0 * LUT_SIZE_SQ;
-      const z1_offset = b1 * LUT_SIZE_SQ;
-      const y0_offset = g0 * LUT_SIZE;
-      const y1_offset = g1 * LUT_SIZE;
-
-      // Fetch 8 corners of the cube
-      // Format in lutData array is (R, G, B) sequentially. 
-      // Array Index = (r + g*WIDTH + b*WIDTH*HEIGHT) * 3
-      
-      // Helper to get RGB from array at specific indices
-      const getC = (ri: number, yOffset: number, zOffset: number) => {
-          const idx = (ri + yOffset + zOffset) * 3;
+      // Helper to fetch vector form LUT
+      // Index = (r + g*w + b*w*h) * 3
+      const getV = (ri: number, gi: number, bi: number) => {
+          const idx = (ri + gi * LUT_SIZE + bi * LUT_SIZE_SQ) * 3;
           return { r: lutData[idx], g: lutData[idx + 1], b: lutData[idx + 2] };
       };
 
-      // Corner 000 (x0, y0, z0)
-      const c000 = getC(r0, y0_offset, z0_offset);
-      const c100 = getC(r1, y0_offset, z0_offset);
-      const c010 = getC(r0, y1_offset, z0_offset);
-      const c110 = getC(r1, y1_offset, z0_offset);
-      const c001 = getC(r0, y0_offset, z1_offset);
-      const c101 = getC(r1, y0_offset, z1_offset);
-      const c011 = getC(r0, y1_offset, z1_offset);
-      const c111 = getC(r1, y1_offset, z1_offset);
+      // Fetch 8 corners
+      const c000 = getV(r0, g0, b0);
+      const c100 = getV(r1, g0, b0);
+      const c010 = getV(r0, g1, b0);
+      const c110 = getV(r1, g1, b0);
+      const c001 = getV(r0, g0, b1);
+      const c101 = getV(r1, g0, b1);
+      const c011 = getV(r0, g1, b1);
+      const c111 = getV(r1, g1, b1);
 
-      // Interpolate along R (x-axis)
-      const c00 = { 
-          r: lerp(c000.r, c100.r, dr), 
-          g: lerp(c000.g, c100.g, dr), 
-          b: lerp(c000.b, c100.b, dr) 
-      };
-      const c10 = { 
-          r: lerp(c010.r, c110.r, dr), 
-          g: lerp(c010.g, c110.g, dr), 
-          b: lerp(c010.b, c110.b, dr) 
-      };
-      const c01 = { 
-          r: lerp(c001.r, c101.r, dr), 
-          g: lerp(c001.g, c101.g, dr), 
-          b: lerp(c001.b, c101.b, dr) 
-      };
-      const c11 = { 
-          r: lerp(c011.r, c111.r, dr), 
-          g: lerp(c011.g, c111.g, dr), 
-          b: lerp(c011.b, c111.b, dr) 
-      };
+      // Interpolate X (Red)
+      const c00 = { r: lerp(c000.r, c100.r, dr), g: lerp(c000.g, c100.g, dr), b: lerp(c000.b, c100.b, dr) };
+      const c10 = { r: lerp(c010.r, c110.r, dr), g: lerp(c010.g, c110.g, dr), b: lerp(c010.b, c110.b, dr) };
+      const c01 = { r: lerp(c001.r, c101.r, dr), g: lerp(c001.g, c101.g, dr), b: lerp(c001.b, c101.b, dr) };
+      const c11 = { r: lerp(c011.r, c111.r, dr), g: lerp(c011.g, c111.g, dr), b: lerp(c011.b, c111.b, dr) };
 
-      // Interpolate along G (y-axis)
-      const c0 = {
-          r: lerp(c00.r, c10.r, dg),
-          g: lerp(c00.g, c10.g, dg),
-          b: lerp(c00.b, c10.b, dg)
-      };
-      const c1 = {
-          r: lerp(c01.r, c11.r, dg),
-          g: lerp(c01.g, c11.g, dg),
-          b: lerp(c01.b, c11.b, dg)
-      };
+      // Interpolate Y (Green)
+      const c0 = { r: lerp(c00.r, c10.r, dg), g: lerp(c00.g, c10.g, dg), b: lerp(c00.b, c10.b, dg) };
+      const c1 = { r: lerp(c01.r, c11.r, dg), g: lerp(c01.g, c11.g, dg), b: lerp(c01.b, c11.b, dg) };
 
-      // Interpolate along B (z-axis) - Final Result
+      // Interpolate Z (Blue)
       let lutR = lerp(c0.r, c1.r, db);
       let lutG = lerp(c0.g, c1.g, db);
       let lutB = lerp(c0.b, c1.b, db);
 
-      // Intensity Mix
+      // Blend Intensity
       if (intensity !== 1) {
-        lutR = r * (1 - intensity) + lutR * intensity;
-        lutG = g * (1 - intensity) + lutG * intensity;
-        lutB = b * (1 - intensity) + lutB * intensity;
+        lutR = lerp(r, lutR, intensity);
+        lutG = lerp(g, lutG, intensity);
+        lutB = lerp(b, lutB, intensity);
       }
 
-      // --- 3. Film Grain ---
+      // --- 4. Grain & Texture ---
       if (hasGrain) {
-        // Luminance-based grain masking (less grain in pure black/white)
-        // Rec.601 luma for speed
-        const l = (r * 299 + g * 587 + b * 114) / 1000 / 255;
-        // Parabolic curve: 1 at 0.5, 0 at 0 and 1. 
-        // 4 * x * (1-x) is standard symmetric parabola.
-        const grainMask = 1.0 - Math.pow(2 * l - 1, 4); // Higher power = cleaner highlights/shadows
-        
-        const noise = (random() - 0.5) * 2;
+        const l = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+        // Grain is strongest in midtones, cleaner in deep black/pure white
+        const grainMask = 1.0 - Math.pow(2 * l - 1, 4); 
+        const noise = (random() - 0.5) * 2; // -1 to 1
         const grainVal = noise * grainAmount * grainMask;
         
         lutR += grainVal;
@@ -337,20 +289,23 @@ export const applyLUT = (
         lutB += grainVal;
       }
 
-      // --- 4. Vignette ---
       if (vignetteStr > 0) {
         const dx = x - centerX;
         const dy = y - centerY;
-        const distSq = dx * dx + dy * dy; // Use squared distance to avoid sqrt in inner loop if possible, but for smooth vignette sqrt is better
-        const dist = Math.sqrt(distSq);
-        const vFactor = dist / maxDist;
-        // Cubic falloff for smoother vignette
+        const distSq = dx * dx + dy * dy;
+        const vFactor = Math.sqrt(distSq) / maxDist;
         const darkening = vFactor * vFactor * vFactor * vignetteStr * 255;
-        
-        lutR = Math.max(0, lutR - darkening);
-        lutG = Math.max(0, lutG - darkening);
-        lutB = Math.max(0, lutB - darkening);
+        lutR -= darkening;
+        lutG -= darkening;
+        lutB -= darkening;
       }
+
+      // --- 5. Dithering (Triangular PDF) --- 
+      // This is crucial for preventing banding when converting float -> int8
+      const dither = (random() - 0.5); // Simple noise dither is usually enough for photo
+      lutR += dither;
+      lutG += dither;
+      lutB += dither;
 
       // Final Clamp
       lutR = Math.max(0, Math.min(255, lutR));
@@ -362,7 +317,6 @@ export const applyLUT = (
       outData[i + 2] = lutB;
       outData[i + 3] = a;
 
-      // Collect Histogram Data
       histR[lutR | 0]++;
       histG[lutG | 0]++;
       histB[lutB | 0]++;

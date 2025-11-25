@@ -5,6 +5,7 @@ import { CanvasView } from './components/CanvasView';
 import { Adjustments, FilmSimulation, LUTData, HistogramData, HSLAdjustments } from './types';
 import { generateFilmStyleLUT } from './services/lutGenerator';
 import { applyLUT } from './services/imageProcessor';
+import { analyzeImage, prepareImageForAI } from './services/aiService';
 
 const defaultHSL: HSLAdjustments = {
   red: { h: 0, s: 0, l: 0 },
@@ -20,6 +21,11 @@ const App: React.FC = () => {
   const [currentFilm, setCurrentFilm] = useState<FilmSimulation>(FilmSimulation.Provia);
   const [intensity, setIntensity] = useState<number>(1.0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  
+  // AI State
+  const [isAIAnalyzing, setIsAIAnalyzing] = useState<boolean>(false);
+  const [aiReasoning, setAiReasoning] = useState<string | null>(null);
+
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
   
   const [adjustments, setAdjustments] = useState<Adjustments>({
@@ -49,14 +55,48 @@ const App: React.FC = () => {
         const img = new Image();
         img.onload = () => {
           setOriginalImage(img);
-          // Reset adjustments on new image load, or keep them? 
-          // Usually better to reset for a clean slate, but let's keep user settings as it's less annoying.
-          // Only resetting HSL if strictly needed, but let's persist for now.
           setHistogramData(null);
+          setAiReasoning(null);
         };
         img.src = event.target?.result as string;
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleAIAutoAdjust = async () => {
+    if (!originalImage) return;
+
+    try {
+      setIsAIAnalyzing(true);
+      setAiReasoning(null);
+      
+      // 1. Prepare low-res image
+      const base64 = await prepareImageForAI(originalImage);
+      
+      // 2. Call Gemini API
+      const result = await analyzeImage(base64);
+      
+      // 3. Apply settings
+      if (result.recommendedFilm) {
+        setCurrentFilm(result.recommendedFilm);
+      }
+      
+      // Merge AI adjustments with defaults for missing keys to be safe
+      setAdjustments(prev => ({
+        ...prev,
+        ...result.adjustments,
+        // Ensure HSL is deep merged properly or completely replaced
+        hsl: result.adjustments.hsl ? { ...defaultHSL, ...result.adjustments.hsl } : prev.hsl
+      }));
+
+      setAiReasoning(result.reasoning);
+
+    } catch (error) {
+      alert("AI Analysis Failed. Please check your network or API Key configuration.");
+      console.error(error);
+    } finally {
+      setIsAIAnalyzing(false);
     }
   };
 
@@ -184,12 +224,6 @@ const App: React.FC = () => {
             // Draw the glow
             procCtx.drawImage(glowCanvas, 0, 0, width, height);
             
-            // C. Warm Tint for "Halation" effect (Red scattering)
-            // We use source-atop to tint only the non-transparent parts of the layer we just drew?
-            // Actually, simply drawing a reddish overlay in 'overlay' or 'color-dodge' mode over the glow might work,
-            // but for simplicity and performance in 2D canvas, just the screen glow is usually sufficient for "Bloom".
-            // To make it "Halation" (Red), we could have tinted the glowCanvas before drawing it back.
-            
             procCtx.restore();
         }
     }
@@ -206,6 +240,20 @@ const App: React.FC = () => {
         originalCanvasRef={originalCanvasRef}
         processedCanvasRef={processedCanvasRef}
       />
+      
+      {/* Toast Notification for AI */}
+      {aiReasoning && (
+        <div className="fixed bottom-6 left-6 z-50 max-w-md bg-gray-900/90 border border-fuji-accent text-gray-200 px-4 py-3 rounded-lg shadow-2xl backdrop-blur animate-fadeIn">
+          <div className="flex items-start gap-3">
+             <span className="text-xl">✨</span>
+             <div>
+               <h4 className="font-bold text-fuji-accent text-sm mb-1">AI 调色完成</h4>
+               <p className="text-xs leading-relaxed text-gray-300">{aiReasoning}</p>
+             </div>
+             <button onClick={() => setAiReasoning(null)} className="text-gray-500 hover:text-white ml-auto">✕</button>
+          </div>
+        </div>
+      )}
 
       {/* Right: Controls Panel */}
       <Controls 
@@ -220,6 +268,8 @@ const App: React.FC = () => {
         onDownload={handleDownload}
         isProcessing={isProcessing}
         histogramData={histogramData}
+        isAIAnalyzing={isAIAnalyzing}
+        onAIAuto={handleAIAutoAdjust}
       />
 
       {/* Hidden Source Canvas for reading data */}
