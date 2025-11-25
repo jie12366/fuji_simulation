@@ -21,10 +21,31 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // --- Initialization ---
+  // Fit to screen helper
+  const calculateBestFit = () => {
+      if (!originalImage || !containerRef.current) return;
+      
+      const containerW = containerRef.current.clientWidth;
+      const containerH = containerRef.current.clientHeight;
+      const imgW = originalImage.width;
+      const imgH = originalImage.height;
+      
+      if (imgW === 0 || imgH === 0) return;
+
+      // Add 5% padding (0.95 factor) so it doesn't touch the edges
+      const scaleX = (containerW * 0.95) / imgW;
+      const scaleY = (containerH * 0.95) / imgH;
+      const bestFit = Math.min(scaleX, scaleY);
+      
+      setScale(bestFit);
+      setPosition({ x: 0, y: 0 });
+  };
+
+  // --- Initialization & Resize ---
   useEffect(() => {
-    if (originalImage && originalCanvasRef.current && containerRef.current) {
+    if (originalImage && originalCanvasRef.current) {
       const canvas = originalCanvasRef.current;
       const ctx = canvas.getContext('2d');
       if (ctx) {
@@ -33,19 +54,15 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
         ctx.drawImage(originalImage, 0, 0);
       }
       
-      // Auto Fit Logic
-      const containerW = containerRef.current.clientWidth;
-      const containerH = containerRef.current.clientHeight;
-      const imgW = originalImage.width;
-      const imgH = originalImage.height;
+      // Trigger fit immediately
+      calculateBestFit();
       
-      // Calculate scale to fit within 90% of the container
-      const scaleX = (containerW * 0.9) / imgW;
-      const scaleY = (containerH * 0.9) / imgH;
-      const bestFit = Math.min(scaleX, scaleY);
-
-      setScale(bestFit);
-      setPosition({ x: 0, y: 0 });
+      const handleResize = () => {
+          requestAnimationFrame(calculateBestFit);
+      };
+      
+      window.addEventListener('resize', handleResize);
+      return () => window.removeEventListener('resize', handleResize);
     }
   }, [originalImage, originalCanvasRef]);
 
@@ -55,15 +72,14 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
     e.preventDefault();
     const zoomSensitivity = 0.001;
     const delta = -e.deltaY * zoomSensitivity;
-    const newScale = Math.min(Math.max(0.01, scale + delta * scale * 5), 20); // Wider zoom range
+    // Limit zoom
+    const newScale = Math.min(Math.max(0.05, scale + delta * scale * 5), 20); 
     setScale(newScale);
   };
 
   // --- Pan Logic (Mouse/Touch) ---
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (isDraggingSlider) return; // Don't pan if using slider
-    // Check if middle click or spacebar held (optional, for now just left click on background)
-    // Actually, standard behavior: Left click on canvas = Pan, unless on slider
+    if (isDraggingSlider) return; 
     setIsPanning(true);
     setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
   };
@@ -75,14 +91,17 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
             y: e.clientY - dragStart.y
         });
     }
-    
-    // Slider Logic
-    if (isDraggingSlider && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        let pos = ((e.clientX - rect.left) / rect.width) * 100;
-        pos = Math.max(0, Math.min(100, pos));
-        setSliderPosition(pos);
-    }
+  };
+
+  
+  const handleWrapperMouseMove = (e: React.MouseEvent) => {
+     if (isDraggingSlider && wrapperRef.current) {
+         e.stopPropagation();
+         const rect = wrapperRef.current.getBoundingClientRect();
+         let x = e.clientX - rect.left;
+         let pos = (x / rect.width) * 100;
+         setSliderPosition(Math.max(0, Math.min(100, pos)));
+     }
   };
 
   const handleMouseUp = () => {
@@ -90,25 +109,9 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
     setIsDraggingSlider(false);
   };
 
-  // --- Slider Handle Logic ---
   const startSliderDrag = (e: React.MouseEvent | React.TouchEvent) => {
-    e.stopPropagation(); // Prevent pan start
+    e.stopPropagation(); 
     setIsDraggingSlider(true);
-  };
-
-  // Fit to screen
-  const handleFit = () => {
-      if (!originalImage || !containerRef.current) return;
-      const containerW = containerRef.current.clientWidth;
-      const containerH = containerRef.current.clientHeight;
-      const imgW = originalImage.width;
-      const imgH = originalImage.height;
-      const scaleX = (containerW * 0.9) / imgW;
-      const scaleY = (containerH * 0.9) / imgH;
-      const bestFit = Math.min(scaleX, scaleY);
-
-      setScale(bestFit);
-      setPosition({ x: 0, y: 0 });
   };
 
   if (!originalImage) {
@@ -130,7 +133,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
   return (
     <div 
-      className="flex-1 bg-[#0a0a0a] overflow-hidden relative cursor-grab active:cursor-grabbing"
+      className="flex-1 bg-[#0a0a0a] overflow-hidden relative cursor-grab active:cursor-grabbing flex items-center justify-center"
       ref={containerRef}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
@@ -142,8 +145,6 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ 
           backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)',
           backgroundSize: '40px 40px',
-          transform: `translate(${position.x % 40}px, ${position.y % 40}px) scale(${scale})`, // Parallax-ish feel
-          transformOrigin: '0 0'
       }}></div>
 
       {/* Info HUD */}
@@ -151,59 +152,63 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
          <div className="bg-black/80 backdrop-blur text-white text-xs font-mono px-3 py-1.5 rounded border border-gray-800 shadow-lg">
              缩放: {Math.round(scale * 100)}%
          </div>
-         <button onClick={handleFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors shadow-lg">
+         <button onClick={calculateBestFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors shadow-lg">
              适应屏幕
          </button>
       </div>
 
       {/* Image Container with Transformation */}
+      {/* Added flex-none to prevent flexbox from squashing dimensions */}
       <div 
-        className="absolute top-0 left-0 w-full h-full flex items-center justify-center pointer-events-none" // Center initially
+        ref={wrapperRef}
+        className="relative shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-75 ease-out pointer-events-auto flex-none"
+        onMouseMove={handleWrapperMouseMove}
+        style={{ 
+            transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+            transformOrigin: 'center',
+            width: originalImage.width,
+            height: originalImage.height,
+        }}
       >
-        <div 
-            className="relative shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-75 ease-out"
+        {/* Layer 1: Original (Bottom Layer) */}
+        <canvas 
+            ref={originalCanvasRef} 
+            className="absolute top-0 left-0 block w-full h-full"
+        />
+
+        {/* Layer 2: Processed (Top Layer) - Clipped from the LEFT to reveal Right side */}
+        <canvas 
+            ref={processedCanvasRef} 
+            className="absolute top-0 left-0 block w-full h-full"
             style={{ 
-                transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
-                transformOrigin: 'center',
-                width: originalImage.width,
-                height: originalImage.height,
-                maxWidth: 'none', // Allow huge scaling
-                maxHeight: 'none'
+                clipPath: `inset(0 0 0 ${sliderPosition}%)`
             }}
+        />
+        
+        {/* Separator Line */}
+        <div 
+            className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10 pointer-events-none shadow-[0_0_10px_black]"
+            style={{ left: `${sliderPosition}%` }}
+        />
+
+        {/* Slider Handle (Interactive) */}
+        <div 
+            className="absolute top-0 bottom-0 w-12 -ml-6 z-20 flex items-center justify-center cursor-col-resize group"
+            style={{ left: `${sliderPosition}%` }}
+            onMouseDown={startSliderDrag}
+            onTouchStart={startSliderDrag}
         >
-            {/* Layer 1: Original (Reference) */}
-            <canvas 
-                ref={originalCanvasRef} 
-                className="absolute top-0 left-0 w-full h-full"
-            />
-
-            {/* Layer 2: Processed (Clipped) */}
-            <div 
-                className="absolute top-0 left-0 h-full overflow-hidden border-r border-white/50"
-                style={{ width: `${sliderPosition}%` }}
-            >
-                <canvas 
-                    ref={processedCanvasRef} 
-                    className="w-full h-full"
-                    // We must size the canvas to match the parent container exactly in CSS pixels
-                    // but since we are scaling the PARENT, this canvas just fills it.
-                    style={{ width: originalImage.width, height: originalImage.height, maxWidth: 'none' }}
-                />
-            </div>
-
-            {/* Slider Handle (Pointer events enabled) */}
-            <div 
-                className="absolute top-0 bottom-0 w-10 -ml-5 z-20 flex items-center justify-center cursor-col-resize pointer-events-auto group"
-                style={{ left: `${sliderPosition}%` }}
-                onMouseDown={startSliderDrag}
-                onTouchStart={startSliderDrag}
-            >
-                <div className="w-[1px] h-full bg-white/50 group-hover:bg-fuji-accent transition-colors shadow-[0_0_10px_black]"></div>
-                <div className="absolute w-6 h-10 bg-black/80 border border-white/20 rounded flex items-center justify-center shadow-lg backdrop-blur">
-                    <div className="w-0.5 h-4 bg-white/80"></div>
-                </div>
+            <div className="w-8 h-8 bg-black/80 border border-white/40 rounded-full flex items-center justify-center shadow-lg backdrop-blur group-hover:scale-110 transition-transform">
+                 <div className="flex gap-0.5">
+                    <div className="w-0.5 h-3 bg-white/90"></div>
+                    <div className="w-0.5 h-3 bg-white/90"></div>
+                 </div>
             </div>
         </div>
+        
+        {/* Labels - Matches visual: Left=Original, Right=Simulated */}
+        <div className="absolute bottom-4 left-4 bg-black/60 text-white text-[10px] px-2 py-1 rounded backdrop-blur pointer-events-none">原图 (Original)</div>
+        <div className="absolute bottom-4 right-4 bg-fuji-accent/90 text-black text-[10px] px-2 py-1 rounded backdrop-blur font-bold pointer-events-none">模拟 (Simulated)</div>
       </div>
     </div>
   );

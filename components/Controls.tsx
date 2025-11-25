@@ -9,7 +9,6 @@ interface ControlsProps {
   adjustments: Adjustments;
   onAdjustmentChange: (key: keyof Adjustments, val: number) => void;
   onHSLChange: (color: keyof HSLAdjustments, param: 'h'|'s'|'l', val: number) => void;
-  // New handlers
   onWBChange: (param: 'temp'|'tint', val: number) => void;
   onGradingChange: (region: keyof GradingAdjustments, param: 'h'|'s', val: number) => void;
   
@@ -17,6 +16,9 @@ interface ControlsProps {
   onIntensityChange: (val: number) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDownload: () => void;
+  onBatchUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onReset: () => void;
+  
   isProcessing: boolean;
   histogramData: HistogramData | null;
   isAIAnalyzing?: boolean;
@@ -51,43 +53,14 @@ const TabButton = ({ active, onClick, label }: { active: boolean, onClick: () =>
   </button>
 );
 
-const HelpModal = ({ onClose }: { onClose: () => void }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn" onClick={onClose}>
-    <div className="bg-[#181818] border border-gray-700 text-gray-300 rounded-lg max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
-      <div className="p-6 border-b border-gray-700 flex justify-between items-center">
-        <h2 className="text-xl font-bold text-white">使用指南</h2>
-        <button onClick={onClose} className="text-gray-500 hover:text-white">✕</button>
-      </div>
-      <div className="p-6 space-y-6 text-sm">
-        <section>
-          <h3 className="text-fuji-accent font-bold mb-2">📸 专业功能升级</h3>
-          <ul className="list-disc pl-4 space-y-2">
-            <li>
-              <strong className="text-white">白平衡 (White Balance):</strong> 
-              控制画面的冷暖（Temp）和红绿偏差（Tint）。这是色彩还原的第一步。
-            </li>
-            <li>
-              <strong className="text-white">色彩分级 (Color Grading):</strong> 
-              电影级调色工具。您可以分别对阴影、中间调和高光赋予不同的色调（例如：阴影偏青，高光偏橙）。
-            </li>
-            <li>
-              <strong className="text-white">锐化 (Sharpening):</strong> 
-              在“特效 FX”中找到。使用 USM 算法增强边缘细节，让照片更清晰。
-            </li>
-          </ul>
-        </section>
-        <div className="bg-gray-800 p-3 rounded border border-gray-700 text-xs text-gray-400">
-          💡 提示：锐化功能可能会轻微增加处理时间。
-        </div>
-      </div>
-      <div className="p-6 border-t border-gray-700">
-        <button onClick={onClose} className="w-full bg-gray-700 hover:bg-gray-600 text-white py-2 rounded font-bold transition-colors">
-          我知道了
-        </button>
-      </div>
-    </div>
-  </div>
-);
+const PRESET_PROMPTS = [
+    { label: '自定义 (Custom)', value: '' },
+    { label: '🏔️ 专业风光 (Landscape)', value: 'Professional Landscape: High dynamic range, vivid but natural colors, enhance blue skies and green foliage, sharp details.' },
+    { label: '👩 电影人像 (Portrait)', value: 'Cinematic Portrait: Flattering skin tones, soft contrast, focus on the subject, slight warm color grading, smooth texture.' },
+    { label: '🏙️ 人文街拍 (Street)', value: 'Urban Street Photography: High contrast, gritty texture, dramatic lighting, desaturated cool tones, Leica style.' },
+    { label: '🌃 赛博朋克 (Cyberpunk)', value: 'Cyberpunk Night: Neon aesthetics, high halation/bloom, vibrant teal and magenta colors, deep blacks, high contrast.' },
+    { label: '🍃 日系空气感 (Airy)', value: 'Japanese Airy Style: High key exposure, low contrast, slightly overexposed, pastel colors, soft dreamy feeling.' },
+];
 
 export const Controls: React.FC<ControlsProps> = ({
   currentFilm,
@@ -101,49 +74,72 @@ export const Controls: React.FC<ControlsProps> = ({
   onIntensityChange,
   onUpload,
   onDownload,
+  onBatchUpload,
+  onReset,
   isProcessing,
   histogramData,
   isAIAnalyzing = false,
-  onAIAuto
+  onAIAuto,
 }) => {
   const [activeTab, setActiveTab] = useState<'basic' | 'color' | 'grading' | 'fx'>('basic');
-  const [showHelp, setShowHelp] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
 
   const colorNames: Record<string, string> = {
     red: '红色', yellow: '黄色', green: '绿色', cyan: '青色', blue: '蓝色', magenta: '洋红'
   };
 
+  const handlePresetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      setAiPrompt(e.target.value);
+  };
+
   return (
     <>
-      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
-      
       <div className="w-full lg:w-96 bg-[#121212] flex flex-col h-auto lg:h-full border-b lg:border-b-0 lg:border-r border-gray-800 shadow-2xl z-20">
         <div className="p-6 bg-[#181818] border-b border-gray-800 flex justify-between items-start">
           <div>
-            <h1 className="text-2xl font-black text-white tracking-widest mb-1">FUJISIM <span className="text-fuji-accent">ULTRA</span></h1>
-            <p className="text-[10px] text-gray-500 uppercase tracking-[0.3em] font-bold">专业胶片模拟引擎</p>
+            <h1 className="text-2xl font-black text-white tracking-widest mb-1">PROGRADE <span className="text-fuji-accent">ULTRA</span></h1>
+            <p className="text-[10px] text-gray-500 uppercase tracking-[0.3em] font-bold">专业级影像处理平台</p>
           </div>
-          <button onClick={() => setShowHelp(true)} className="text-gray-500 hover:text-fuji-accent transition-colors p-1">
-             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <button 
+             onClick={onReset}
+             title="重置所有参数"
+             className="text-xs font-bold text-gray-500 hover:text-white transition-colors bg-gray-800 hover:bg-red-900 px-3 py-1 rounded"
+          >
+             ↺ 重置
           </button>
         </div>
 
         <div className="px-6 pt-6">
           {histogramData && <Histogram data={histogramData} />}
           <div className="mb-6 p-1">
-             <div className="mb-2 relative">
-                <input type="text" value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="AI 提示词... (例如: 赛博朋克)" className="w-full bg-[#1a1a1a] text-gray-300 text-xs border border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:border-fuji-accent transition-colors placeholder-gray-600" />
+             {/* AI Section */}
+             <div className="mb-2 space-y-2">
+                <select 
+                    onChange={handlePresetChange}
+                    className="w-full bg-[#1a1a1a] text-gray-400 text-[10px] border border-gray-700 rounded px-2 py-1 focus:outline-none focus:border-fuji-accent cursor-pointer"
+                >
+                    <option value="" disabled selected>⚡️ 快速选择 AI 风格...</option>
+                    {PRESET_PROMPTS.map((p, i) => (
+                        <option key={i} value={p.value}>{p.label}</option>
+                    ))}
+                </select>
+                <input 
+                    type="text" 
+                    value={aiPrompt} 
+                    onChange={(e) => setAiPrompt(e.target.value)} 
+                    placeholder="或输入提示词... (例如: 赛博朋克)" 
+                    className="w-full bg-[#1a1a1a] text-gray-300 text-xs border border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:border-fuji-accent transition-colors placeholder-gray-600" 
+                />
              </div>
              <div className="flex gap-2 h-10">
                 <label className="flex-1 cursor-pointer group h-full">
                     <div className="bg-gray-800 group-hover:bg-gray-700 transition-all text-white text-center rounded-lg border border-gray-700 border-dashed group-hover:border-fuji-accent h-full flex items-center justify-center">
-                    <span className="flex items-center justify-center gap-2 text-xs font-bold">导入</span>
+                    <span className="flex items-center justify-center gap-2 text-xs font-bold">📂 导入</span>
                     <input type="file" className="hidden" accept="image/*,.dng,.nef,.arw,.cr2,.orf,.rw2,.raf" onChange={onUpload} />
                     </div>
                 </label>
-                <button onClick={() => onAIAuto && onAIAuto(aiPrompt)} disabled={isAIAnalyzing || !histogramData} className={`flex-[1.5] relative overflow-hidden group rounded-lg border border-transparent transition-all h-full flex items-center justify-center ${isAIAnalyzing || !histogramData ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white'}`}>
-                    {isAIAnalyzing ? <span className="text-xs font-bold animate-pulse">分析中...</span> : <span className="text-xs font-bold">AI 智能调色</span>}
+                <button onClick={() => onAIAuto && onAIAuto(aiPrompt)} disabled={isAIAnalyzing || !histogramData} className={`flex-[1.5] relative overflow-hidden group rounded-lg border border-transparent transition-all h-full flex items-center justify-center ${isAIAnalyzing || !histogramData ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg hover:shadow-purple-500/20'}`}>
+                    {isAIAnalyzing ? <span className="text-xs font-bold animate-pulse">分析中...</span> : <span className="text-xs font-bold">✨ AI 智能调色</span>}
                 </button>
              </div>
           </div>
@@ -158,12 +154,25 @@ export const Controls: React.FC<ControlsProps> = ({
 
         <div className="flex-1 overflow-y-auto px-6 custom-scrollbar pb-10">
           
-          <div className="mb-8">
-             <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 tracking-wider">配方 (Profile)</div>
+          <div className="mb-6 border-b border-gray-800 pb-6">
+             <div className="flex justify-between items-end mb-2">
+                <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">配方 (Profile)</div>
+             </div>
              <select value={currentFilm} onChange={(e) => onFilmChange(e.target.value as FilmSimulation)} className="w-full bg-[#222] text-white border border-gray-700 rounded px-3 py-2 mb-3 focus:outline-none focus:border-fuji-accent text-sm font-medium">
               {Object.values(FilmSimulation).map((film) => <option key={film} value={film}>{film}</option>)}
             </select>
             <Slider label="强度 (Intensity)" value={Math.round(filterIntensity * 100)} min={0} max={100} onChange={(v) => onIntensityChange(v / 100)} unit="%" />
+            
+            {/* Main Reset Button */}
+            <button 
+                onClick={onReset}
+                className="w-full mt-2 py-2 text-xs font-bold text-gray-400 bg-gray-800/50 hover:bg-red-900/30 hover:text-red-400 border border-transparent hover:border-red-900/50 rounded transition-all flex items-center justify-center gap-2"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+                重置所有参数 (Reset Palette)
+            </button>
           </div>
 
           {activeTab === 'basic' && (
@@ -254,9 +263,17 @@ export const Controls: React.FC<ControlsProps> = ({
         </div>
 
         <div className="p-6 bg-[#181818] border-t border-gray-800">
-          <button onClick={onDownload} disabled={isProcessing} className={`w-full py-4 px-6 rounded font-black text-fuji-900 transition-all transform active:scale-[0.98] flex justify-center items-center gap-3 shadow-[0_0_20px_rgba(0,208,132,0.2)] hover:shadow-[0_0_30px_rgba(0,208,132,0.4)] ${isProcessing ? 'bg-gray-600 cursor-not-allowed' : 'bg-fuji-accent hover:bg-[#00e090]'}`}>
-            {isProcessing ? <span className="animate-pulse">处理中 RENDERING...</span> : "导出图片 (EXPORT)"}
-          </button>
+          <div className="flex gap-2">
+             <label className="flex-1 cursor-pointer">
+                <div className={`w-full py-4 px-4 rounded font-bold text-xs uppercase tracking-wider text-center border transition-all ${isProcessing ? 'bg-gray-800 text-gray-500 border-gray-700' : 'bg-[#1a1a1a] text-fuji-accent border-fuji-accent hover:bg-gray-800'}`}>
+                    批量处理 (Batch)
+                    <input type="file" multiple className="hidden" accept="image/*,.dng,.nef,.arw,.cr2,.orf,.rw2,.raf" onChange={onBatchUpload} disabled={isProcessing} />
+                </div>
+             </label>
+             <button onClick={onDownload} disabled={isProcessing} className={`flex-[2] py-4 px-6 rounded font-black text-fuji-900 transition-all transform active:scale-[0.98] flex justify-center items-center gap-3 shadow-[0_0_20px_rgba(0,208,132,0.2)] hover:shadow-[0_0_30px_rgba(0,208,132,0.4)] ${isProcessing ? 'bg-gray-600 cursor-not-allowed' : 'bg-fuji-accent hover:bg-[#00e090]'}`}>
+               {isProcessing ? <span className="animate-pulse">RENDERING...</span> : "导出 (EXPORT)"}
+             </button>
+          </div>
         </div>
       </div>
     </>

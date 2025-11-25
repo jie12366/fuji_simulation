@@ -38,7 +38,11 @@ const adjustmentsSchema = {
   properties: {
     recommendedFilm: {
       type: Type.STRING,
-      description: "The name of the film simulation to use (e.g. 'Classic Chrome', 'Velvia', 'Nostalgic Neg')."
+      description: "The name of the film simulation to use."
+    },
+    suggestedFilename: {
+      type: Type.STRING,
+      description: "A short, descriptive snake_case filename based on image content (e.g., sunset_beach_girl.jpg)."
     },
     reasoning: {
       type: Type.STRING,
@@ -47,24 +51,23 @@ const adjustmentsSchema = {
     adjustments: {
       type: Type.OBJECT,
       properties: {
-        brightness: { type: Type.NUMBER, description: "-100 to 100" },
-        contrast: { type: Type.NUMBER, description: "-100 to 100" },
-        saturation: { type: Type.NUMBER, description: "-100 to 100" },
-        highlights: { type: Type.NUMBER, description: "-100 to 100" },
-        shadows: { type: Type.NUMBER, description: "-100 to 100" },
-        vignette: { type: Type.NUMBER, description: "0 to 100" },
-        grainAmount: { type: Type.NUMBER, description: "0 to 100" },
-        sharpening: { type: Type.NUMBER, description: "0 to 100 (Unsharp Mask)" },
+        brightness: { type: Type.NUMBER },
+        contrast: { type: Type.NUMBER },
+        saturation: { type: Type.NUMBER },
+        highlights: { type: Type.NUMBER },
+        shadows: { type: Type.NUMBER },
+        vignette: { type: Type.NUMBER },
+        grainAmount: { type: Type.NUMBER },
+        sharpening: { type: Type.NUMBER },
         whiteBalance: {
           type: Type.OBJECT,
           properties: {
-            temp: { type: Type.NUMBER, description: "-50 (Cool/Blue) to 50 (Warm/Amber)" },
-            tint: { type: Type.NUMBER, description: "-50 (Green) to 50 (Magenta)" }
+            temp: { type: Type.NUMBER },
+            tint: { type: Type.NUMBER }
           }
         },
         grading: {
           type: Type.OBJECT,
-          description: "Cinematic Color Grading (Split Toning). Use this to add color casts to specific ranges.",
           properties: {
             shadows: { type: Type.OBJECT, properties: { h: { type: Type.NUMBER }, s: { type: Type.NUMBER } } },
             midtones: { type: Type.OBJECT, properties: { h: { type: Type.NUMBER }, s: { type: Type.NUMBER } } },
@@ -73,7 +76,6 @@ const adjustmentsSchema = {
         },
         hsl: {
           type: Type.OBJECT,
-          description: "HSL adjustments for 6 colors",
           properties: {
             red: { type: Type.OBJECT, properties: { h: { type: Type.NUMBER }, s: { type: Type.NUMBER }, l: { type: Type.NUMBER } } },
             yellow: { type: Type.OBJECT, properties: { h: { type: Type.NUMBER }, s: { type: Type.NUMBER }, l: { type: Type.NUMBER } } },
@@ -88,11 +90,12 @@ const adjustmentsSchema = {
       required: ["brightness", "contrast", "saturation", "highlights", "shadows", "hsl"]
     }
   },
-  required: ["recommendedFilm", "adjustments", "reasoning"]
+  required: ["recommendedFilm", "suggestedFilename", "adjustments", "reasoning"]
 };
 
 export interface AIAnalysisResult {
   recommendedFilm: string;
+  suggestedFilename: string;
   adjustments: Partial<Adjustments>;
   reasoning: string;
 }
@@ -100,36 +103,21 @@ export interface AIAnalysisResult {
 export const analyzeImage = async (base64Image: string, userHint?: string): Promise<AIAnalysisResult> => {
   try {
     const prompt = `
-      Act as a world-class professional colorist and image editor.
-      Analyze the content, lighting, mood, and composition of this image to determine the best Fujifilm Simulation style and parameter adjustments.
+      Act as a professional digital retoucher.
+      Analyze the image and create a Fujifilm recipe.
 
-      Your goal is ARTISTIC expression and technical perfection.
-
-      KEY NEW CAPABILITIES (USE THEM!):
-      1. **White Balance**: Detect if the image is too cool or warm. Fix it using 'temp'.
-      2. **Color Grading**: Create cinematic looks! 
-         - Example: "Teal & Orange" -> Shadows Hue 180-210 (Cyan/Teal), Highlights Hue 20-40 (Orange).
-         - Example: "Moody Green" -> Shadows Hue 120-150.
-      3. **Sharpening**: If it's architecture or landscape, add sharpening (20-40). If it's a soft portrait, keep it low (0-10).
+      MANDATORY REQUIREMENTS:
+      1. **NO GRAIN**: Set 'grainAmount' to 0. The user wants a clean, sharp digital look.
+      2. **HIGH FIDELITY**: Set 'sharpening' between 30 and 50 to enhance fine details and texture.
+      3. **DEPTH**: Use 'contrast' and 'shadows' to create depth, rather than washing out the image with vintage effects.
+      4. **COLOR**: Keep skin tones natural but separate them from the background.
       
-      IMPORTANT INSTRUCTIONS:
-      1. **Do NOT use rigid rules**. Look at the light (soft vs hard), the shadows, and the emotional tone.
-      2. **User Guidance**: The user may provide a hint. If they do, PRIORITIZE it above all else.
-      
-      User's Hint/Preference: "${userHint || 'No specific preference provided. Use your best artistic judgment.'}"
+      **FILENAME GENERATION**:
+      Analyze the content of the image (subject, environment, lighting) and generate a 'suggestedFilename' in snake_case English (e.g., 'snow_mountain_sunset', 'cyberpunk_city_night', 'cat_portrait_studio').
 
-      Available Film Styles & their Aesthetic Characteristics:
-      - 'Provia': Standard, faithful.
-      - 'Velvia': Vivid, high contrast, landscapes.
-      - 'Astia': Soft, portraits.
-      - 'Classic Chrome': Desaturated, documentary, moody.
-      - 'Reala Ace': Sharp, modern, realistic.
-      - 'Classic Neg': Hard tonality, retro, reddish highlights/cyan shadows.
-      - 'Nostalgic Neg': Warm amber highlights, vintage.
-      - 'Eterna': Cinema, flat, low contrast.
-      - 'Acros': Black & White.
+      User Hint: "${userHint || ''}"
 
-      Return a valid JSON object matching the schema.
+      Return JSON matching the schema.
     `;
 
     const response = await ai.models.generateContent({
@@ -143,7 +131,7 @@ export const analyzeImage = async (base64Image: string, userHint?: string): Prom
       config: {
         responseMimeType: "application/json",
         responseSchema: adjustmentsSchema,
-        temperature: 0.7, // Slightly higher creative freedom
+        temperature: 0.3, 
       }
     });
 

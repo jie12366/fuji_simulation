@@ -1,5 +1,6 @@
 
 export enum FilmSimulation {
+  None = 'None / 原图直出',
   Provia = 'PROVIA / 标准模式',
   Velvia = 'Velvia / 鲜艳模式',
   Astia = 'ASTIA / 柔和模式',
@@ -83,6 +84,11 @@ export interface HistogramData {
   b: number[];
 }
 
-// Represents a flattened 3D LUT (Look Up Table)
-// Size 32x32x32 = 32768 entries, each entry has R, G, B
-export type LUTData = Uint8Array;
+// Flexible LUT Container
+export interface LUTContainer {
+    size: number;
+    data: Float32Array | Uint8Array; // Float for precision source, Uint8 for fast render
+    name?: string;
+}
+
+export type LUTData = LUTContainer;

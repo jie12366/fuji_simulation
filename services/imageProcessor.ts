@@ -1,8 +1,5 @@
 
-import { Adjustments, LUTData, HistogramData, HSLAdjustments, HSLChannel } from '../types';
-
-const LUT_SIZE = 32;
-const LUT_SIZE_SQ = LUT_SIZE * LUT_SIZE;
+import { Adjustments, LUTContainer, HistogramData, HSLAdjustments, HSLChannel } from '../types';
 
 const mulberry32 = (a: number) => {
     return () => {
@@ -13,7 +10,95 @@ const mulberry32 = (a: number) => {
     }
 }
 
-// --- RGB <-> HSL Helpers (same as before) ---
+// Overlay Blend Mode Helper
+const overlayBlend = (base: number, blend: number): number => {
+    return (base < 0.5) 
+        ? (2.0 * base * blend) 
+        : (1.0 - 2.0 * (1.0 - base) * (1.0 - blend));
+};
+
+// --- Combined Texture Pass (Sharpen -> Grain) ---
+export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => {
+    const amount = adjustments.sharpening;
+    const grainAmount = adjustments.grainAmount / 100; // Normalized 0-1
+    const grainSize = Math.max(1, adjustments.grainSize);
+    const hasGrain = grainAmount > 0;
+    const hasSharpen = amount > 0;
+
+    if (!hasGrain && !hasSharpen) return;
+
+    const width = imageData.width;
+    const height = imageData.height;
+    const data = imageData.data;
+    const random = mulberry32(1337);
+
+    let src: Uint8ClampedArray | null = null;
+    if (hasSharpen) src = new Uint8ClampedArray(data);
+
+    const k = amount / 150; 
+    const center = 1 + 4 * k;
+    const neighbor = -k;
+    const threshold = 8; 
+
+    // Grain generation optimization
+    // We generate a smaller noise buffer if grainSize > 1 to simulate "clumping"
+    // For simplicity/perf in this pass, we just use random per pixel but use overlay blending
+    
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4;
+            let r = data[idx], g = data[idx + 1], b = data[idx + 2];
+
+            // 1. Sharpening (Luma based)
+            if (hasSharpen && src && x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+                const iU = ((y - 1) * width + x) * 4;
+                const iD = ((y + 1) * width + x) * 4;
+                const iL = (y * width + (x - 1)) * 4;
+                const iR = (y * width + (x + 1)) * 4;
+
+                const sr = src[idx] * center + (src[iU] + src[iD] + src[iL] + src[iR]) * neighbor;
+                const sg = src[idx + 1] * center + (src[iU + 1] + src[iD + 1] + src[iL + 1] + src[iR + 1]) * neighbor;
+                const sb = src[idx + 2] * center + (src[iU + 2] + src[iD + 2] + src[iL + 2] + src[iR + 2]) * neighbor;
+
+                const lumaOrig = 0.299 * r + 0.587 * g + 0.114 * b;
+                const lumaSharp = 0.299 * sr + 0.587 * sg + 0.114 * sb;
+                
+                if (Math.abs(lumaSharp - lumaOrig) > threshold) {
+                    r = Math.min(255, Math.max(0, sr));
+                    g = Math.min(255, Math.max(0, sg));
+                    b = Math.min(255, Math.max(0, sb));
+                }
+            }
+
+            // 2. Grain (Overlay Mode for natural integration)
+            if (hasGrain) {
+                // Generate noise 0..1
+                let noise = random(); 
+                
+                // Adjust strength based on luminance (Shadows/Mids show more grain, Highlights less)
+                const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                const lumaFactor = 1.0 - Math.pow(luma, 3); // Suppress grain in pure white
+                
+                // Effective strength
+                const strength = grainAmount * lumaFactor * 0.5; // Scale down for overlay
+
+                // Blend: We treat the noise as a grey layer (0.5 +/- noise)
+                // Overlay blends it into the image
+                // 0.5 is neutral. <0.5 darkens, >0.5 brightens.
+                const noiseVal = 0.5 + (noise - 0.5) * strength * 2.0;
+                
+                // Apply Overlay Blend
+                r = overlayBlend(r / 255, noiseVal) * 255;
+                g = overlayBlend(g / 255, noiseVal) * 255;
+                b = overlayBlend(b / 255, noiseVal) * 255;
+            }
+
+            data[idx] = r; data[idx + 1] = g; data[idx + 2] = b;
+        }
+    }
+};
+
+// ... HSL Helpers omitted for brevity, assumed unchanged ...
 function rgbToHsl(r: number, g: number, b: number, out: number[]) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -98,99 +183,9 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
 
 const lerp = (a: number, b: number, t: number) => a + t * (b - a);
 
-// --- Combined Texture Pass (Sharpen -> Grain) ---
-// This ensures we sharpen the image content BUT NOT the grain.
-// It also applies sharpening using a luminance threshold to avoid noise amplification.
-export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => {
-    const amount = adjustments.sharpening;
-    const grainAmount = adjustments.grainAmount / 3; 
-    const hasGrain = grainAmount > 0;
-    const hasSharpen = amount > 0;
-
-    if (!hasGrain && !hasSharpen) return;
-
-    const width = imageData.width;
-    const height = imageData.height;
-    const data = imageData.data;
-    
-    // Random generator for grain
-    const random = mulberry32(1337);
-
-    // If we are sharpening, we need a source copy to read from
-    let src: Uint8ClampedArray | null = null;
-    if (hasSharpen) {
-        src = new Uint8ClampedArray(data);
-    }
-
-    // Sharpening constants
-    // We use a simpler 3x3 kernel but apply it to Luma only, and use threshold
-    const k = amount / 150; // Reduced scaling factor for subtler effect
-    const center = 1 + 4 * k;
-    const neighbor = -k;
-    const threshold = 8; // Threshold to ignore subtle noise (0-255 range)
-
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const idx = (y * width + x) * 4;
-            
-            let r = data[idx];
-            let g = data[idx + 1];
-            let b = data[idx + 2];
-
-            // 1. Sharpening
-            if (hasSharpen && src && x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-                // Indices
-                const iU = ((y - 1) * width + x) * 4;
-                const iD = ((y + 1) * width + x) * 4;
-                const iL = (y * width + (x - 1)) * 4;
-                const iR = (y * width + (x + 1)) * 4;
-
-                // Calculate sharpened RGB
-                const sr = src[idx] * center + (src[iU] + src[iD] + src[iL] + src[iR]) * neighbor;
-                const sg = src[idx + 1] * center + (src[iU + 1] + src[iD + 1] + src[iL + 1] + src[iR + 1]) * neighbor;
-                const sb = src[idx + 2] * center + (src[iU + 2] + src[iD + 2] + src[iL + 2] + src[iR + 2]) * neighbor;
-
-                // Luma-based Thresholding
-                // Calculate original luma vs sharpened luma
-                const lumaOrig = 0.299 * r + 0.587 * g + 0.114 * b;
-                const lumaSharp = 0.299 * sr + 0.587 * sg + 0.114 * sb;
-                
-                const diff = Math.abs(lumaSharp - lumaOrig);
-
-                // Only apply if difference is significant (Edges)
-                if (diff > threshold) {
-                    // Apply the delta to original pixels
-                    // This preserves color relation better than raw RGB convolution
-                    r = Math.min(255, Math.max(0, sr));
-                    g = Math.min(255, Math.max(0, sg));
-                    b = Math.min(255, Math.max(0, sb));
-                }
-            }
-
-            // 2. Grain (Applied ON TOP of sharpened image)
-            if (hasGrain) {
-                const l = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-                // Shadow/Highlight roll-off for grain (less grain in pure black/white)
-                const grainMask = 1.0 - Math.pow(2 * l - 1, 4); 
-                const noise = (random() - 0.5) * 2; 
-                const grainVal = noise * grainAmount * grainMask;
-                
-                r = r + grainVal;
-                g = g + grainVal;
-                b = b + grainVal;
-            }
-
-            // Write back
-            data[idx] = r;
-            data[idx + 1] = g;
-            data[idx + 2] = b;
-        }
-    }
-};
-
 export const applyLUT = (
   pixelData: ImageData, 
-  lutData: LUTData, 
+  lutContainer: LUTContainer, 
   adjustments: Adjustments,
   intensity: number
 ): { imageData: ImageData, histogram: HistogramData } => {
@@ -204,161 +199,103 @@ export const applyLUT = (
   const histG = new Array(256).fill(0);
   const histB = new Array(256).fill(0);
 
-  // Constants
+  // Use the container size (likely 32 from baking)
+  const lutSize = lutContainer.size;
+  const lutData = lutContainer.data;
+  const lutSizeSq = lutSize * lutSize;
+  const lutMax = lutSize - 1;
+  const scale = lutMax / 255;
+
   const brightness = adjustments.brightness;
   const contrastFactor = (259 * (adjustments.contrast + 255)) / (255 * (259 - adjustments.contrast));
   const saturationFactor = 1 + (adjustments.saturation / 100);
   const shadowLift = adjustments.shadows * 0.5;
   const highlightDrop = adjustments.highlights * 0.5;
-  
   const vignetteStr = adjustments.vignette / 100;
-  const centerX = width / 2;
-  const centerY = height / 2;
+  const centerX = width / 2; const centerY = height / 2;
   const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
-
-  const LUT_MAX = LUT_SIZE - 1;
-  const scale = LUT_MAX / 255;
-
   const random = mulberry32(1337);
   const hasHSL = Object.values(adjustments.hsl).some(c => c.h !== 0 || c.s !== 0 || c.l !== 0);
-  
-  const hslCache = [0,0,0];
-  const rgbCache = [0,0,0];
+  const hslCache = [0,0,0], rgbCache = [0,0,0];
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
 
-      let r = data[i];
-      let g = data[i + 1];
-      let b = data[i + 2];
-      const a = data[i + 3];
+      let r = data[i], g = data[i + 1], b = data[i + 2]; const a = data[i + 3];
 
-      // --- 1. HSL Processing (Pre-LUT) ---
+      // HSL
       if (hasHSL) {
         const newRgb = applyHSL(r, g, b, adjustments.hsl, hslCache, rgbCache);
         r = newRgb[0]; g = newRgb[1]; b = newRgb[2];
       }
 
-      // --- 2. Basic Adjustments ---
+      // Basic Tone
       if (brightness !== 0) { r += brightness; g += brightness; b += brightness; }
-
       if (contrastFactor !== 1) {
         r = contrastFactor * (r - 128) + 128;
         g = contrastFactor * (g - 128) + 128;
         b = contrastFactor * (b - 128) + 128;
       }
-
-      r = Math.max(0, Math.min(255, r));
-      g = Math.max(0, Math.min(255, g));
-      b = Math.max(0, Math.min(255, b));
+      r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b));
 
       const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-
       if (saturationFactor !== 1) {
         r = luma + (r - luma) * saturationFactor;
         g = luma + (g - luma) * saturationFactor;
         b = luma + (b - luma) * saturationFactor;
       }
-
-      if (shadowLift !== 0) {
-        const lift = Math.max(0, 1 - (luma / 255)) * shadowLift;
-        r += lift; g += lift; b += lift;
-      }
-      if (highlightDrop !== 0) {
-        const drop = Math.max(0, (luma - 128) / 128) * highlightDrop;
-        r += drop; g += drop; b += drop;
-      }
-
-      r = Math.max(0, Math.min(255, r));
-      g = Math.max(0, Math.min(255, g));
-      b = Math.max(0, Math.min(255, b));
-
-      // --- 3. 3D LUT ---
+      if (shadowLift !== 0) { const lift = Math.max(0, 1 - (luma / 255)) * shadowLift; r += lift; g += lift; b += lift; }
+      if (highlightDrop !== 0) { const drop = Math.max(0, (luma - 128) / 128) * highlightDrop; r += drop; g += drop; b += drop; }
       
-      const rPos = r * scale;
-      const gPos = g * scale;
-      const bPos = b * scale;
+      r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b));
 
-      const r0 = Math.floor(rPos);
-      const g0 = Math.floor(gPos);
-      const b0 = Math.floor(bPos);
-      
-      const r1 = Math.min(LUT_MAX, r0 + 1);
-      const g1 = Math.min(LUT_MAX, g0 + 1);
-      const b1 = Math.min(LUT_MAX, b0 + 1);
-
-      const dr = rPos - r0;
-      const dg = gPos - g0;
-      const db = bPos - b0;
+      // LUT Lookup (Trilinear)
+      const rPos = r * scale, gPos = g * scale, bPos = b * scale;
+      const r0 = Math.floor(rPos), g0 = Math.floor(gPos), b0 = Math.floor(bPos);
+      const r1 = Math.min(lutMax, r0 + 1), g1 = Math.min(lutMax, g0 + 1), b1 = Math.min(lutMax, b0 + 1);
+      const dr = rPos - r0, dg = gPos - g0, db = bPos - b0;
 
       const getV = (ri: number, gi: number, bi: number) => {
-          const idx = (ri + gi * LUT_SIZE + bi * LUT_SIZE_SQ) * 3;
-          return { r: lutData[idx], g: lutData[idx + 1], b: lutData[idx + 2] };
+          const idxCorrect = (ri + gi * lutSize + bi * lutSizeSq) * 3;
+          return { r: lutData[idxCorrect], g: lutData[idxCorrect + 1], b: lutData[idxCorrect + 2] };
       };
 
-      const c000 = getV(r0, g0, b0);
-      const c100 = getV(r1, g0, b0);
-      const c010 = getV(r0, g1, b0);
-      const c110 = getV(r1, g1, b0);
-      const c001 = getV(r0, g0, b1);
-      const c101 = getV(r1, g0, b1);
-      const c011 = getV(r0, g1, b1);
-      const c111 = getV(r1, g1, b1);
+      const c000 = getV(r0, g0, b0); const c100 = getV(r1, g0, b0);
+      const c010 = getV(r0, g1, b0); const c110 = getV(r1, g1, b0);
+      const c001 = getV(r0, g0, b1); const c101 = getV(r1, g0, b1);
+      const c011 = getV(r0, g1, b1); const c111 = getV(r1, g1, b1);
 
-      const c00 = { r: lerp(c000.r, c100.r, dr), g: lerp(c000.g, c100.g, dr), b: lerp(c000.b, c100.b, dr) };
-      const c10 = { r: lerp(c010.r, c110.r, dr), g: lerp(c010.g, c110.g, dr), b: lerp(c010.b, c110.b, dr) };
-      const c01 = { r: lerp(c001.r, c101.r, dr), g: lerp(c001.g, c101.g, dr), b: lerp(c001.b, c101.b, dr) };
-      const c11 = { r: lerp(c011.r, c111.r, dr), g: lerp(c011.g, c111.g, dr), b: lerp(c011.b, c111.b, dr) };
-
-      const c0 = { r: lerp(c00.r, c10.r, dg), g: lerp(c00.g, c10.g, dg), b: lerp(c00.b, c10.b, dg) };
-      const c1 = { r: lerp(c01.r, c11.r, dg), g: lerp(c01.g, c11.g, dg), b: lerp(c01.b, c11.b, dg) };
-
-      let lutR = lerp(c0.r, c1.r, db);
-      let lutG = lerp(c0.g, c1.g, db);
-      let lutB = lerp(c0.b, c1.b, db);
+      const lerpColor = (c1: any, c2: any, t: number) => ({
+          r: lerp(c1.r, c2.r, t), g: lerp(c1.g, c2.g, t), b: lerp(c1.b, c2.b, t)
+      });
+      const c00 = lerpColor(c000, c100, dr); const c10 = lerpColor(c010, c110, dr);
+      const c01 = lerpColor(c001, c101, dr); const c11 = lerpColor(c011, c111, dr);
+      const c0 = lerpColor(c00, c10, dg); const c1 = lerpColor(c01, c11, dg);
+      let {r: lr, g: lg, b: lb} = lerpColor(c0, c1, db);
 
       if (intensity !== 1) {
-        lutR = lerp(r, lutR, intensity);
-        lutG = lerp(g, lutG, intensity);
-        lutB = lerp(b, lutB, intensity);
+        lr = lerp(r, lr, intensity); lg = lerp(g, lg, intensity); lb = lerp(b, lb, intensity);
       }
 
-      // --- 4. Vignette (Post-LUT, Pre-Texture) ---
+      // Vignette & Dither
       if (vignetteStr > 0) {
-        const dx = x - centerX;
-        const dy = y - centerY;
-        const distSq = dx * dx + dy * dy;
-        const vFactor = Math.sqrt(distSq) / maxDist;
+        const dx = x - centerX, dy = y - centerY;
+        const vFactor = Math.sqrt(dx * dx + dy * dy) / maxDist;
         const darkening = vFactor * vFactor * vFactor * vignetteStr * 255;
-        lutR -= darkening; lutG -= darkening; lutB -= darkening;
+        lr -= darkening; lg -= darkening; lb -= darkening;
       }
-
-      // Dithering (Still needed for gradient banding prevention)
       const dither = (random() - 0.5);
-      lutR += dither; lutG += dither; lutB += dither;
+      lr += dither; lg += dither; lb += dither;
 
-      lutR = Math.max(0, Math.min(255, lutR));
-      lutG = Math.max(0, Math.min(255, lutG));
-      lutB = Math.max(0, Math.min(255, lutB));
+      lr = Math.max(0, Math.min(255, lr)); lg = Math.max(0, Math.min(255, lg)); lb = Math.max(0, Math.min(255, lb));
 
-      outData[i] = lutR;
-      outData[i + 1] = lutG;
-      outData[i + 2] = lutB;
-      outData[i + 3] = a;
+      outData[i] = lr; outData[i + 1] = lg; outData[i + 2] = lb; outData[i + 3] = a;
 
-      histR[lutR | 0]++;
-      histG[lutG | 0]++;
-      histB[lutB | 0]++;
+      histR[lr | 0]++; histG[lg | 0]++; histB[lb | 0]++;
     }
   }
-  
-  // --- 5. Texture Pass (Sharpening + Grain) ---
-  // Moved outside the main loop to handle convolution and layering properly
-  applyTexture(output, adjustments);
 
-  return { 
-    imageData: output, 
-    histogram: { r: histR, g: histG, b: histB } 
-  };
+  applyTexture(output, adjustments);
+  return { imageData: output, histogram: { r: histR, g: histG, b: histB } };
 };
