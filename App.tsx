@@ -23,6 +23,8 @@ const defaultGrading: GradingAdjustments = {
   highlights: { h: 0, s: 0 },
 };
 
+const defaultWB = { temp: 0, tint: 0 };
+
 const findMatchingFilm = (aiString: string): FilmSimulation | null => {
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
   const target = normalize(aiString);
@@ -63,7 +65,7 @@ const App: React.FC = () => {
     vignette: 0,
     halation: 0,
     sharpening: 0,
-    whiteBalance: { temp: 0, tint: 0 },
+    whiteBalance: { ...defaultWB },
     grading: { ...defaultGrading },
     hsl: { ...defaultHSL }
   });
@@ -117,11 +119,22 @@ const App: React.FC = () => {
       const result = await analyzeImage(base64, hint);
       const matchedFilm = findMatchingFilm(result.recommendedFilm);
       if (matchedFilm) setCurrentFilm(matchedFilm);
+      
+      // Merge AI results with defaults to ensure safety
       setAdjustments(prev => ({
         ...prev,
         ...result.adjustments,
-        hsl: result.adjustments.hsl ? { ...defaultHSL, ...result.adjustments.hsl } : prev.hsl
+        // Safely merge nested objects
+        hsl: result.adjustments.hsl ? { ...defaultHSL, ...result.adjustments.hsl } : prev.hsl,
+        whiteBalance: result.adjustments.whiteBalance ? { ...defaultWB, ...result.adjustments.whiteBalance } : prev.whiteBalance,
+        grading: result.adjustments.grading ? {
+          shadows: { ...defaultGrading.shadows, ...result.adjustments.grading.shadows },
+          midtones: { ...defaultGrading.midtones, ...result.adjustments.grading.midtones },
+          highlights: { ...defaultGrading.highlights, ...result.adjustments.grading.highlights }
+        } : prev.grading,
+        sharpening: result.adjustments.sharpening ?? prev.sharpening
       }));
+
       setAiReasoning(result.reasoning);
     } catch (error) {
       alert("AI Analysis Failed. Please check your network.");

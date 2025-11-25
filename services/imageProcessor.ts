@@ -98,50 +98,92 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
 
 const lerp = (a: number, b: number, t: number) => a + t * (b - a);
 
-// --- Sharpening Filter ---
-// Apply simple convolution kernel for sharpening (approximate Unsharp Mask)
-// 0  -1  0
-// -1  5 -1
-// 0  -1  0
-export const applySharpen = (imageData: ImageData, amount: number) => {
-    if (amount <= 0) return;
+// --- Combined Texture Pass (Sharpen -> Grain) ---
+// This ensures we sharpen the image content BUT NOT the grain.
+// It also applies sharpening using a luminance threshold to avoid noise amplification.
+export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => {
+    const amount = adjustments.sharpening;
+    const grainAmount = adjustments.grainAmount / 3; 
+    const hasGrain = grainAmount > 0;
+    const hasSharpen = amount > 0;
+
+    if (!hasGrain && !hasSharpen) return;
 
     const width = imageData.width;
     const height = imageData.height;
     const data = imageData.data;
     
-    // We need a copy of the source buffer to read clean pixels
-    // Using Float32Array for calculation precision, or just Uint8 is fine for speed. 
-    // Uint8ClampedArray is fastest for copy.
-    const src = new Uint8ClampedArray(data);
-    
-    // Mix factor: amount 0..100 -> 0..1
-    // The kernel effectively adds (Original - Blurred) * strength
-    // A standard 3x3 sharpen kernel:
-    // [0, -k, 0]
-    // [-k, 1+4k, -k]
-    // [0, -k, 0]
-    
-    const k = amount / 200; // scaling factor
+    // Random generator for grain
+    const random = mulberry32(1337);
+
+    // If we are sharpening, we need a source copy to read from
+    let src: Uint8ClampedArray | null = null;
+    if (hasSharpen) {
+        src = new Uint8ClampedArray(data);
+    }
+
+    // Sharpening constants
+    // We use a simpler 3x3 kernel but apply it to Luma only, and use threshold
+    const k = amount / 150; // Reduced scaling factor for subtler effect
     const center = 1 + 4 * k;
     const neighbor = -k;
+    const threshold = 8; // Threshold to ignore subtle noise (0-255 range)
 
-    // Iterate pixels (skip borders for speed/simplicity)
-    for (let y = 1; y < height - 1; y++) {
-        for (let x = 1; x < width - 1; x++) {
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
             const idx = (y * width + x) * 4;
             
-            // Indices of neighbors (Up, Down, Left, Right)
-            const iU = ((y - 1) * width + x) * 4;
-            const iD = ((y + 1) * width + x) * 4;
-            const iL = (y * width + (x - 1)) * 4;
-            const iR = (y * width + (x + 1)) * 4;
+            let r = data[idx];
+            let g = data[idx + 1];
+            let b = data[idx + 2];
 
-            // Apply Convolution per channel
-            data[idx]     = Math.min(255, Math.max(0, src[idx] * center + (src[iU] + src[iD] + src[iL] + src[iR]) * neighbor));
-            data[idx + 1] = Math.min(255, Math.max(0, src[idx + 1] * center + (src[iU + 1] + src[iD + 1] + src[iL + 1] + src[iR + 1]) * neighbor));
-            data[idx + 2] = Math.min(255, Math.max(0, src[idx + 2] * center + (src[iU + 2] + src[iD + 2] + src[iL + 2] + src[iR + 2]) * neighbor));
-            // Alpha remains same
+            // 1. Sharpening
+            if (hasSharpen && src && x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+                // Indices
+                const iU = ((y - 1) * width + x) * 4;
+                const iD = ((y + 1) * width + x) * 4;
+                const iL = (y * width + (x - 1)) * 4;
+                const iR = (y * width + (x + 1)) * 4;
+
+                // Calculate sharpened RGB
+                const sr = src[idx] * center + (src[iU] + src[iD] + src[iL] + src[iR]) * neighbor;
+                const sg = src[idx + 1] * center + (src[iU + 1] + src[iD + 1] + src[iL + 1] + src[iR + 1]) * neighbor;
+                const sb = src[idx + 2] * center + (src[iU + 2] + src[iD + 2] + src[iL + 2] + src[iR + 2]) * neighbor;
+
+                // Luma-based Thresholding
+                // Calculate original luma vs sharpened luma
+                const lumaOrig = 0.299 * r + 0.587 * g + 0.114 * b;
+                const lumaSharp = 0.299 * sr + 0.587 * sg + 0.114 * sb;
+                
+                const diff = Math.abs(lumaSharp - lumaOrig);
+
+                // Only apply if difference is significant (Edges)
+                if (diff > threshold) {
+                    // Apply the delta to original pixels
+                    // This preserves color relation better than raw RGB convolution
+                    r = Math.min(255, Math.max(0, sr));
+                    g = Math.min(255, Math.max(0, sg));
+                    b = Math.min(255, Math.max(0, sb));
+                }
+            }
+
+            // 2. Grain (Applied ON TOP of sharpened image)
+            if (hasGrain) {
+                const l = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+                // Shadow/Highlight roll-off for grain (less grain in pure black/white)
+                const grainMask = 1.0 - Math.pow(2 * l - 1, 4); 
+                const noise = (random() - 0.5) * 2; 
+                const grainVal = noise * grainAmount * grainMask;
+                
+                r = r + grainVal;
+                g = g + grainVal;
+                b = b + grainVal;
+            }
+
+            // Write back
+            data[idx] = r;
+            data[idx + 1] = g;
+            data[idx + 2] = b;
         }
     }
 };
@@ -168,9 +210,6 @@ export const applyLUT = (
   const saturationFactor = 1 + (adjustments.saturation / 100);
   const shadowLift = adjustments.shadows * 0.5;
   const highlightDrop = adjustments.highlights * 0.5;
-  
-  const grainAmount = adjustments.grainAmount / 3; 
-  const hasGrain = grainAmount > 0;
   
   const vignetteStr = adjustments.vignette / 100;
   const centerX = width / 2;
@@ -285,15 +324,7 @@ export const applyLUT = (
         lutB = lerp(b, lutB, intensity);
       }
 
-      // --- 4. Grain & Texture ---
-      if (hasGrain) {
-        const l = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-        const grainMask = 1.0 - Math.pow(2 * l - 1, 4); 
-        const noise = (random() - 0.5) * 2; 
-        const grainVal = noise * grainAmount * grainMask;
-        lutR += grainVal; lutG += grainVal; lutB += grainVal;
-      }
-
+      // --- 4. Vignette (Post-LUT, Pre-Texture) ---
       if (vignetteStr > 0) {
         const dx = x - centerX;
         const dy = y - centerY;
@@ -303,7 +334,7 @@ export const applyLUT = (
         lutR -= darkening; lutG -= darkening; lutB -= darkening;
       }
 
-      // Dithering
+      // Dithering (Still needed for gradient banding prevention)
       const dither = (random() - 0.5);
       lutR += dither; lutG += dither; lutB += dither;
 
@@ -322,13 +353,9 @@ export const applyLUT = (
     }
   }
   
-  // --- 5. Post-Pixel Effects (Sharpening) ---
-  if (adjustments.sharpening > 0) {
-      applySharpen(output, adjustments.sharpening);
-      // Histogram needs re-calc if sharpening changes values significantly, 
-      // but for perf we skip re-calc of histogram after sharpening. 
-      // Sharpening affects local contrast mostly.
-  }
+  // --- 5. Texture Pass (Sharpening + Grain) ---
+  // Moved outside the main loop to handle convolution and layering properly
+  applyTexture(output, adjustments);
 
   return { 
     imageData: output, 
