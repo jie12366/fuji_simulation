@@ -9,24 +9,26 @@ import { applyLUT } from './services/imageProcessor';
 import { analyzeImage, prepareImageForAI } from './services/aiService';
 import { loadDNG } from './services/dngLoader';
 
-declare const JSZip: any;
-
-const defaultHSL: HSLAdjustments = {
-  red: { h: 0, s: 0, l: 0 },
-  yellow: { h: 0, s: 0, l: 0 },
-  green: { h: 0, s: 0, l: 0 },
-  cyan: { h: 0, s: 0, l: 0 },
-  blue: { h: 0, s: 0, l: 0 },
-  magenta: { h: 0, s: 0, l: 0 },
-};
-const defaultGrading: GradingAdjustments = { shadows: {h:0,s:0}, midtones: {h:0,s:0}, highlights: {h:0,s:0} };
-const defaultWB = { temp: 0, tint: 0 };
-
-const defaultAdjustments: Adjustments = {
-    brightness: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0,
-    grainAmount: 0, grainSize: 2, vignette: 0, halation: 0, sharpening: 0,
-    whiteBalance: { ...defaultWB }, grading: { ...defaultGrading }, hsl: { ...defaultHSL }
-};
+// Factory function to create a fresh, deep copy of default adjustments
+// This avoids reference issues where resetting points back to a dirty object
+const createDefaultAdjustments = (): Adjustments => ({
+  brightness: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0,
+  grainAmount: 0, grainSize: 2, vignette: 0, halation: 0, sharpening: 0,
+  whiteBalance: { temp: 0, tint: 0 },
+  grading: {
+    shadows: { h: 0, s: 0 },
+    midtones: { h: 0, s: 0 },
+    highlights: { h: 0, s: 0 }
+  },
+  hsl: {
+    red: { h: 0, s: 0, l: 0 },
+    yellow: { h: 0, s: 0, l: 0 },
+    green: { h: 0, s: 0, l: 0 },
+    cyan: { h: 0, s: 0, l: 0 },
+    blue: { h: 0, s: 0, l: 0 },
+    magenta: { h: 0, s: 0, l: 0 },
+  }
+});
 
 const App: React.FC = () => {
   const [originalImage, setOriginalImage] = useState<HTMLImageElement | null>(null);
@@ -45,7 +47,8 @@ const App: React.FC = () => {
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [batchStatus, setBatchStatus] = useState({ current: 0, total: 0, filename: '' });
   
-  const [adjustments, setAdjustments] = useState<Adjustments>(defaultAdjustments);
+  // Initialize with factory
+  const [adjustments, setAdjustments] = useState<Adjustments>(createDefaultAdjustments);
 
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -90,17 +93,20 @@ const App: React.FC = () => {
   };
 
   const handleBatchUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
     if (!currentFinalLUT.current) {
         alert("Please select a film profile first.");
         return;
     }
 
-    const files = Array.from(e.target.files) as File[];
+    const files = Array.from(fileList) as File[];
     setIsBatchProcessing(true);
     setBatchStatus({ current: 0, total: files.length, filename: 'Initializing...' });
 
     try {
+        const JSZip = (window as any).JSZip;
+        if (!JSZip) throw new Error("JSZip library not loaded");
         const zip = new JSZip();
         
         for (let i = 0; i < files.length; i++) {
@@ -162,7 +168,6 @@ const App: React.FC = () => {
 
             } catch (err) {
                 console.error(`Failed to process ${file.name}`, err);
-                // Optionally add error log to zip
                 zip.file(`error_${file.name}.txt`, `Failed to process: ${(err as Error).message}`);
             }
         }
@@ -191,28 +196,20 @@ const App: React.FC = () => {
       const base64 = await prepareImageForAI(originalImage);
       const result = await analyzeImage(base64, hint);
       
-      const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const target = normalize(result.recommendedFilm);
-      let matchedFilm = FilmSimulation.Provia;
+      // FORCE "None" as per new requirement, ignoring AI's film suggestion if any
+      setCurrentFilm(FilmSimulation.None);
       
-      for (const v of Object.values(FilmSimulation)) {
-          if (normalize(v).includes(target) || target.includes(normalize(v.split('/')[0]))) {
-              matchedFilm = v;
-              break;
-          }
-      }
-      setCurrentFilm(matchedFilm);
-      
-      // Update adjustments
+      // Update adjustments with deep merge
+      const defaults = createDefaultAdjustments();
       setAdjustments(prev => ({
         ...prev,
         ...result.adjustments,
-        hsl: result.adjustments.hsl ? { ...defaultHSL, ...result.adjustments.hsl } : prev.hsl,
-        whiteBalance: result.adjustments.whiteBalance ? { ...defaultWB, ...result.adjustments.whiteBalance } : prev.whiteBalance,
+        hsl: result.adjustments.hsl ? { ...defaults.hsl, ...result.adjustments.hsl } : prev.hsl,
+        whiteBalance: result.adjustments.whiteBalance ? { ...defaults.whiteBalance, ...result.adjustments.whiteBalance } : prev.whiteBalance,
         grading: result.adjustments.grading ? {
-          shadows: { ...defaultGrading.shadows, ...result.adjustments.grading.shadows },
-          midtones: { ...defaultGrading.midtones, ...result.adjustments.grading.midtones },
-          highlights: { ...defaultGrading.highlights, ...result.adjustments.grading.highlights }
+          shadows: { ...defaults.grading.shadows, ...result.adjustments.grading.shadows },
+          midtones: { ...defaults.grading.midtones, ...result.adjustments.grading.midtones },
+          highlights: { ...defaults.grading.highlights, ...result.adjustments.grading.highlights }
         } : prev.grading,
         sharpening: result.adjustments.sharpening ?? prev.sharpening
       }));
@@ -225,6 +222,26 @@ const App: React.FC = () => {
     } finally {
       setIsAIAnalyzing(false);
     }
+  };
+
+  const handleApplyPreset = (name: string, presetAdjustments: Partial<Adjustments>) => {
+      // 1. Reset to clean slate
+      const defaults = createDefaultAdjustments();
+      // 2. Set Film to None
+      setCurrentFilm(FilmSimulation.None);
+      // 3. Merge preset
+      setAdjustments(prev => ({
+          ...defaults,
+          ...presetAdjustments,
+          hsl: presetAdjustments.hsl ? { ...defaults.hsl, ...presetAdjustments.hsl } : defaults.hsl,
+          whiteBalance: presetAdjustments.whiteBalance ? { ...defaults.whiteBalance, ...presetAdjustments.whiteBalance } : defaults.whiteBalance,
+          grading: presetAdjustments.grading ? {
+              shadows: { ...defaults.grading.shadows, ...presetAdjustments.grading.shadows },
+              midtones: { ...defaults.grading.midtones, ...presetAdjustments.grading.midtones },
+              highlights: { ...defaults.grading.highlights, ...presetAdjustments.grading.highlights }
+          } : defaults.grading
+      }));
+      setIntensity(1.0);
   };
 
   const handleAdjustmentChange = (key: keyof Adjustments, val: number) => setAdjustments(prev => ({ ...prev, [key]: val }));
@@ -249,12 +266,11 @@ const App: React.FC = () => {
     link.click();
   };
 
+  // Reset logic
   const handleReset = () => {
-      if (window.confirm("确定要重置所有参数吗？")) {
-          setAdjustments(defaultAdjustments);
-          setIntensity(1.0);
-          // Optionally reset film simulation or keep it? Keeping it feels more natural for a "reset params" action.
-      }
+      setAdjustments(createDefaultAdjustments());
+      setIntensity(1.0);
+      setCurrentFilm(FilmSimulation.Provia); // Optional: reset film too? Or keep current? Let's reset to Provia standard.
   };
 
   useEffect(() => {
@@ -351,6 +367,7 @@ const App: React.FC = () => {
         onUpload={handleUpload} onDownload={handleDownload}
         onBatchUpload={handleBatchUpload}
         onReset={handleReset}
+        onApplyPreset={handleApplyPreset}
         isProcessing={isProcessing} histogramData={histogramData}
         isAIAnalyzing={isAIAnalyzing} onAIAuto={handleAIAutoAdjust}
       />

@@ -17,7 +17,10 @@ const overlayBlend = (base: number, blend: number): number => {
         : (1.0 - 2.0 * (1.0 - base) * (1.0 - blend));
 };
 
-// --- Combined Texture Pass (Sharpen -> Grain) ---
+// Helper: Get Rec.709 Luma
+const getLuma = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+// --- Combined Texture Pass (Smart Sharpen -> Grain) ---
 export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => {
     const amount = adjustments.sharpening;
     const grainAmount = adjustments.grainAmount / 100; // Normalized 0-1
@@ -32,59 +35,89 @@ export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => 
     const data = imageData.data;
     const random = mulberry32(1337);
 
+    // Create a copy of the source data for convolution reading
+    // This is essential so we don't sharpen the already sharpened pixels iteratively
     let src: Uint8ClampedArray | null = null;
     if (hasSharpen) src = new Uint8ClampedArray(data);
 
-    const k = amount / 150; 
-    const center = 1 + 4 * k;
-    const neighbor = -k;
-    const threshold = 8; 
-
-    // Grain generation optimization
-    // We generate a smaller noise buffer if grainSize > 1 to simulate "clumping"
-    // For simplicity/perf in this pass, we just use random per pixel but use overlay blending
+    // Sharpening Constants
+    // Strength scaled: 0-100 -> 0.0 - 1.5 reasonable range
+    const sharpStrength = (amount / 100) * 1.5;
+    // Noise Gate: Differences smaller than this are ignored (prevents grain sharpening)
+    // Higher value = cleaner "smooth" areas, but might miss subtle texture. 
+    // 6-8 is a good "Pro" balance for removing graininess.
+    const noiseThreshold = 6; 
     
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const idx = (y * width + x) * 4;
             let r = data[idx], g = data[idx + 1], b = data[idx + 2];
 
-            // 1. Sharpening (Luma based)
-            if (hasSharpen && src && x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-                const iU = ((y - 1) * width + x) * 4;
-                const iD = ((y + 1) * width + x) * 4;
-                const iL = (y * width + (x - 1)) * 4;
-                const iR = (y * width + (x + 1)) * 4;
+            // --- 1. World-Class Smart Sharpening ---
+            // "Unsharp Mask" approach via High-Pass extraction with Noise Gating
+            if (hasSharpen && src) {
+                // Bounds check for 3x3 kernel
+                if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+                    const iU = ((y - 1) * width + x) * 4;
+                    const iD = ((y + 1) * width + x) * 4;
+                    const iL = (y * width + (x - 1)) * 4;
+                    const iR = (y * width + (x + 1)) * 4;
 
-                const sr = src[idx] * center + (src[iU] + src[iD] + src[iL] + src[iR]) * neighbor;
-                const sg = src[idx + 1] * center + (src[iU + 1] + src[iD + 1] + src[iL + 1] + src[iR + 1]) * neighbor;
-                const sb = src[idx + 2] * center + (src[iU + 2] + src[iD + 2] + src[iL + 2] + src[iR + 2]) * neighbor;
+                    // Get Luma of center
+                    const lumaC = getLuma(src[idx], src[idx+1], src[idx+2]);
 
-                const lumaOrig = 0.299 * r + 0.587 * g + 0.114 * b;
-                const lumaSharp = 0.299 * sr + 0.587 * sg + 0.114 * sb;
-                
-                if (Math.abs(lumaSharp - lumaOrig) > threshold) {
-                    r = Math.min(255, Math.max(0, sr));
-                    g = Math.min(255, Math.max(0, sg));
-                    b = Math.min(255, Math.max(0, sb));
+                    // Get Luma of 4-neighbors (Box Blur approximation)
+                    const lU = getLuma(src[iU], src[iU+1], src[iU+2]);
+                    const lD = getLuma(src[iD], src[iD+1], src[iD+2]);
+                    const lL = getLuma(src[iL], src[iL+1], src[iL+2]);
+                    const lR = getLuma(src[iR], src[iR+1], src[iR+2]);
+                    
+                    const lumaAvg = (lU + lD + lL + lR) * 0.25;
+
+                    // High Pass Signal (Details)
+                    const detail = lumaC - lumaAvg;
+
+                    // *** KEY UPGRADE: Noise Gate / Thresholding ***
+                    // If the detail contrast is very low (likely noise or flat skin), ignore it.
+                    if (Math.abs(detail) > noiseThreshold) {
+                        
+                        // *** KEY UPGRADE: Shadow Protection ***
+                        // Reduce sharpening in very dark areas to prevent noise explosion
+                        // Ramp down from luma 40 to 0
+                        let protection = 1.0;
+                        if (lumaC < 40) {
+                            protection = Math.max(0, lumaC / 40);
+                        }
+
+                        // Apply Sharpening
+                        // We add the detail contrast back to the RGB channels proportional to the strength
+                        // This preserves color relation better than sharpening per-channel
+                        const amount = detail * sharpStrength * protection;
+
+                        // Clamp to prevent Haloing (overshoot)
+                        // Simple approach: Apply
+                        r = Math.min(255, Math.max(0, r + amount));
+                        g = Math.min(255, Math.max(0, g + amount));
+                        b = Math.min(255, Math.max(0, b + amount));
+                    }
                 }
             }
 
-            // 2. Grain (Overlay Mode for natural integration)
+            // --- 2. Grain (Overlay Mode) ---
             if (hasGrain) {
                 // Generate noise 0..1
                 let noise = random(); 
                 
                 // Adjust strength based on luminance (Shadows/Mids show more grain, Highlights less)
-                const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                const lumaFactor = 1.0 - Math.pow(luma, 3); // Suppress grain in pure white
+                const luma = getLuma(r, g, b) / 255;
+                // Suppress grain in pure white and deep black slightly to look more analog
+                const lumaFactor = 1.0 - Math.pow(luma - 0.5, 2) * 4; // Parabolic falloff at extremes? No, simpler:
+                // Standard film curve: shadows have grain, highlights have less.
+                const filmGrainCurve = Math.max(0.2, 1.0 - luma * luma); 
                 
                 // Effective strength
-                const strength = grainAmount * lumaFactor * 0.5; // Scale down for overlay
+                const strength = grainAmount * filmGrainCurve * 0.4; 
 
-                // Blend: We treat the noise as a grey layer (0.5 +/- noise)
-                // Overlay blends it into the image
-                // 0.5 is neutral. <0.5 darkens, >0.5 brightens.
                 const noiseVal = 0.5 + (noise - 0.5) * strength * 2.0;
                 
                 // Apply Overlay Blend

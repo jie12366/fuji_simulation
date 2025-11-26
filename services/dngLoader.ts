@@ -1,5 +1,6 @@
 
-declare const UTIF: any;
+// Access global UTIF via window to avoid TS errors
+const UTIF = (window as any).UTIF;
 
 const TAG_SUBIFDS = 330;
 const TAG_IMAGEWIDTH = 256;
@@ -245,6 +246,8 @@ const renderToImage = (rgba: Uint8Array, width: number, height: number): Promise
 };
 
 export const loadDNG = async (file: File): Promise<HTMLImageElement> => {
+  if (!UTIF) throw new Error("UTIF library not loaded");
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async (e) => {

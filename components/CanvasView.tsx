@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useState } from 'react';
 
 interface CanvasViewProps {
@@ -34,16 +33,14 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       
       if (imgW === 0 || imgH === 0) return;
 
-      // Add 5% padding (0.95 factor) so it doesn't touch the edges
-      const scaleX = (containerW * 0.95) / imgW;
-      const scaleY = (containerH * 0.95) / imgH;
+      const scaleX = (containerW * 0.90) / imgW; // More breathing room (10%)
+      const scaleY = (containerH * 0.90) / imgH;
       const bestFit = Math.min(scaleX, scaleY);
       
       setScale(bestFit);
       setPosition({ x: 0, y: 0 });
   };
 
-  // --- Initialization & Resize ---
   useEffect(() => {
     if (originalImage && originalCanvasRef.current) {
       const canvas = originalCanvasRef.current;
@@ -53,31 +50,23 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
         canvas.height = originalImage.height;
         ctx.drawImage(originalImage, 0, 0);
       }
-      
-      // Trigger fit immediately
       calculateBestFit();
       
-      const handleResize = () => {
-          requestAnimationFrame(calculateBestFit);
-      };
-      
+      const handleResize = () => requestAnimationFrame(calculateBestFit);
       window.addEventListener('resize', handleResize);
       return () => window.removeEventListener('resize', handleResize);
     }
   }, [originalImage, originalCanvasRef]);
 
-  // --- Zoom Logic (Wheel) ---
   const handleWheel = (e: React.WheelEvent) => {
     if (!originalImage) return;
     e.preventDefault();
     const zoomSensitivity = 0.001;
     const delta = -e.deltaY * zoomSensitivity;
-    // Limit zoom
     const newScale = Math.min(Math.max(0.05, scale + delta * scale * 5), 20); 
     setScale(newScale);
   };
 
-  // --- Pan Logic (Mouse/Touch) ---
   const handleMouseDown = (e: React.MouseEvent) => {
     if (isDraggingSlider) return; 
     setIsPanning(true);
@@ -93,7 +82,6 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
     }
   };
 
-  
   const handleWrapperMouseMove = (e: React.MouseEvent) => {
      if (isDraggingSlider && wrapperRef.current) {
          e.stopPropagation();
@@ -116,16 +104,21 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
   if (!originalImage) {
     return (
-      <div className="flex-1 bg-[#0a0a0a] flex flex-col items-center justify-center p-8 text-gray-500 border-l border-gray-800 select-none relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-gray-800/20 via-[#0a0a0a] to-[#0a0a0a]"></div>
-        <div className="z-10 flex flex-col items-center">
-            <div className="bg-gray-900/50 p-10 rounded-3xl border border-gray-800 backdrop-blur-sm mb-6 shadow-2xl">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-20 w-20 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={0.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
+      <div className="flex-1 bg-[#050505] flex flex-col items-center justify-center p-8 text-gray-500 relative overflow-hidden">
+        {/* Subtle grid background */}
+        <div className="absolute inset-0 opacity-[0.03]" style={{ 
+          backgroundImage: 'linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)',
+          backgroundSize: '20px 20px',
+        }}></div>
+        
+        <div className="z-10 flex flex-col items-center animate-fadeIn">
+            <div className="w-24 h-24 mb-6 rounded-3xl bg-gray-900 border border-gray-800 flex items-center justify-center shadow-2xl">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
             </div>
-            <h2 className="text-3xl font-thin tracking-[0.2em] text-white">工作区</h2>
-            <p className="text-sm mt-4 text-gray-600 font-mono">请先在右侧导入图片</p>
+            <h2 className="text-2xl font-light tracking-[0.3em] text-gray-400">WORKSPACE</h2>
+            <p className="text-xs mt-3 text-gray-600 font-mono tracking-wide">Import an image to start grading</p>
         </div>
       </div>
     );
@@ -133,7 +126,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
 
   return (
     <div 
-      className="flex-1 bg-[#0a0a0a] overflow-hidden relative cursor-grab active:cursor-grabbing flex items-center justify-center"
+      className="flex-1 bg-[#050505] overflow-hidden relative cursor-grab active:cursor-grabbing flex items-center justify-center"
       ref={containerRef}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
@@ -141,27 +134,30 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Background Grid */}
-      <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ 
-          backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)',
-          backgroundSize: '40px 40px',
+      {/* Background Grid - Darker, finer */}
+      <div className="absolute inset-0 opacity-[0.05] pointer-events-none" style={{ 
+          backgroundImage: 'linear-gradient(#444 1px, transparent 1px), linear-gradient(90deg, #444 1px, transparent 1px)',
+          backgroundSize: '30px 30px',
       }}></div>
 
-      {/* Info HUD */}
-      <div className="absolute top-6 left-6 z-30 flex gap-2">
-         <div className="bg-black/80 backdrop-blur text-white text-xs font-mono px-3 py-1.5 rounded border border-gray-800 shadow-lg">
-             缩放: {Math.round(scale * 100)}%
+      {/* Floating Dock HUD (Bottom Center) */}
+      <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-30 flex items-center gap-4 bg-[#121212]/80 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-opacity hover:opacity-100 opacity-80">
+         <div className="text-[10px] font-mono text-gray-400 border-r border-gray-700 pr-3">
+             {Math.round(scale * 100)}%
          </div>
-         <button onClick={calculateBestFit} className="bg-fuji-accent text-black text-xs font-bold px-3 py-1.5 rounded hover:bg-white transition-colors shadow-lg">
-             适应屏幕
+         <button 
+           onClick={calculateBestFit} 
+           className="text-gray-300 hover:text-fuji-accent transition-colors flex items-center gap-1.5"
+           title="Fit to Screen"
+         >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
+            <span className="text-[10px] font-bold uppercase tracking-wide">Fit</span>
          </button>
       </div>
 
-      {/* Image Container with Transformation */}
-      {/* Added flex-none to prevent flexbox from squashing dimensions */}
       <div 
         ref={wrapperRef}
-        className="relative shadow-[0_0_50px_rgba(0,0,0,0.5)] transition-transform duration-75 ease-out pointer-events-auto flex-none"
+        className="relative shadow-2xl transition-transform duration-75 ease-out pointer-events-auto flex-none"
         onMouseMove={handleWrapperMouseMove}
         style={{ 
             transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
@@ -170,45 +166,37 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
             height: originalImage.height,
         }}
       >
-        {/* Layer 1: Original (Bottom Layer) */}
-        <canvas 
-            ref={originalCanvasRef} 
-            className="absolute top-0 left-0 block w-full h-full"
-        />
-
-        {/* Layer 2: Processed (Top Layer) - Clipped from the LEFT to reveal Right side */}
+        <canvas ref={originalCanvasRef} className="absolute top-0 left-0 block w-full h-full" />
         <canvas 
             ref={processedCanvasRef} 
             className="absolute top-0 left-0 block w-full h-full"
-            style={{ 
-                clipPath: `inset(0 0 0 ${sliderPosition}%)`
-            }}
+            style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }}
         />
         
-        {/* Separator Line */}
+        {/* Separator */}
         <div 
-            className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10 pointer-events-none shadow-[0_0_10px_black]"
+            className="absolute top-0 bottom-0 w-[1px] bg-white z-10 pointer-events-none drop-shadow-[0_0_8px_rgba(0,0,0,0.8)]"
             style={{ left: `${sliderPosition}%` }}
         />
 
-        {/* Slider Handle (Interactive) */}
+        {/* Handle */}
         <div 
-            className="absolute top-0 bottom-0 w-12 -ml-6 z-20 flex items-center justify-center cursor-col-resize group"
+            className="absolute top-0 bottom-0 w-16 -ml-8 z-20 flex items-center justify-center cursor-col-resize group"
             style={{ left: `${sliderPosition}%` }}
             onMouseDown={startSliderDrag}
             onTouchStart={startSliderDrag}
         >
-            <div className="w-8 h-8 bg-black/80 border border-white/40 rounded-full flex items-center justify-center shadow-lg backdrop-blur group-hover:scale-110 transition-transform">
-                 <div className="flex gap-0.5">
-                    <div className="w-0.5 h-3 bg-white/90"></div>
-                    <div className="w-0.5 h-3 bg-white/90"></div>
+            <div className="w-8 h-8 rounded-full flex items-center justify-center backdrop-blur-sm bg-white/10 border border-white/40 shadow-lg group-hover:scale-110 transition-transform">
+                 <div className="flex gap-1">
+                    <div className="w-0.5 h-3 bg-white"></div>
+                    <div className="w-0.5 h-3 bg-white"></div>
                  </div>
             </div>
         </div>
         
-        {/* Labels - Matches visual: Left=Original, Right=Simulated */}
-        <div className="absolute bottom-4 left-4 bg-black/60 text-white text-[10px] px-2 py-1 rounded backdrop-blur pointer-events-none">原图 (Original)</div>
-        <div className="absolute bottom-4 right-4 bg-fuji-accent/90 text-black text-[10px] px-2 py-1 rounded backdrop-blur font-bold pointer-events-none">模拟 (Simulated)</div>
+        {/* Floating Tags */}
+        <div className="absolute bottom-4 left-4 px-2 py-1 rounded bg-black/50 backdrop-blur text-[10px] font-bold text-gray-400 border border-white/5 pointer-events-none tracking-widest uppercase">ORIGINAL</div>
+        <div className="absolute bottom-4 right-4 px-2 py-1 rounded bg-fuji-accent/10 backdrop-blur text-[10px] font-bold text-fuji-accent border border-fuji-accent/30 pointer-events-none tracking-widest uppercase shadow-[0_0_10px_rgba(0,208,132,0.2)]">PROCESSED</div>
       </div>
     </div>
   );

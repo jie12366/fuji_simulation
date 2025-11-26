@@ -38,7 +38,7 @@ const adjustmentsSchema = {
   properties: {
     recommendedFilm: {
       type: Type.STRING,
-      description: "The name of the film simulation to use."
+      description: "Always return 'None / 原图直出'."
     },
     suggestedFilename: {
       type: Type.STRING,
@@ -46,7 +46,7 @@ const adjustmentsSchema = {
     },
     reasoning: {
       type: Type.STRING,
-      description: "A short explanation of why this look was chosen."
+      description: "A short explanation of the color grading strategy."
     },
     adjustments: {
       type: Type.OBJECT,
@@ -103,17 +103,19 @@ export interface AIAnalysisResult {
 export const analyzeImage = async (base64Image: string, userHint?: string): Promise<AIAnalysisResult> => {
   try {
     const prompt = `
-      Act as a professional digital retoucher.
-      Analyze the image and create a Fujifilm recipe.
+      Act as a professional high-end digital retoucher using Capture One / Lightroom.
+      Analyze the image and create a manual color grading recipe.
 
-      MANDATORY REQUIREMENTS:
-      1. **NO GRAIN**: Set 'grainAmount' to 0. The user wants a clean, sharp digital look.
-      2. **HIGH FIDELITY**: Set 'sharpening' between 30 and 50 to enhance fine details and texture.
-      3. **DEPTH**: Use 'contrast' and 'shadows' to create depth, rather than washing out the image with vintage effects.
-      4. **COLOR**: Keep skin tones natural but separate them from the background.
-      
+      CRITICAL RULES:
+      1. **NO FILTERS**: You MUST NOT use specific film simulations. Set 'recommendedFilm' to 'None / 原图直出'.
+      2. **MANUAL GRADING**: You must achieve the desired look purely using White Balance, HSL, Tone Curves (Contrast/Shadows/Highlights), and Color Grading (Split Toning).
+      3. **QUALITY**: 
+         - Grain: 0 (Digital clean look).
+         - Sharpening: 35-50 (High fidelity).
+      4. **GOAL**: Create a look that matches the content (e.g., if it's a sunset, boost Orange Saturation and warm White Balance; if it's Cyberpunk, shift Blues to Cyan and Magentas).
+
       **FILENAME GENERATION**:
-      Analyze the content of the image (subject, environment, lighting) and generate a 'suggestedFilename' in snake_case English (e.g., 'snow_mountain_sunset', 'cyberpunk_city_night', 'cat_portrait_studio').
+      Generate a 'suggestedFilename' in snake_case based on content.
 
       User Hint: "${userHint || ''}"
 
@@ -131,7 +133,7 @@ export const analyzeImage = async (base64Image: string, userHint?: string): Prom
       config: {
         responseMimeType: "application/json",
         responseSchema: adjustmentsSchema,
-        temperature: 0.3, 
+        temperature: 0.4, 
       }
     });
 
