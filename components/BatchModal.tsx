@@ -1,3 +1,4 @@
+
 import React from 'react';
 
 interface BatchModalProps {
@@ -15,10 +16,10 @@ export const BatchModal: React.FC<BatchModalProps> = ({ current, total, filename
         {/* Animated Background Gradient */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-fuji-accent via-blue-500 to-fuji-accent animate-pulse"></div>
         
-        <h2 className="text-2xl font-black text-white tracking-wider mb-2">BATCH PROCESSING</h2>
+        <h2 className="text-2xl font-black text-white tracking-wider mb-2">批量处理中 (BATCH)</h2>
         <div className="flex justify-between items-end mb-4">
             <span className="text-fuji-accent font-mono text-xl">{current} / {total}</span>
-            <span className="text-gray-500 text-xs font-mono uppercase">Processing Queue</span>
+            <span className="text-gray-500 text-xs font-mono uppercase">处理队列 (Processing Queue)</span>
         </div>
         
         {/* Progress Bar */}
@@ -32,7 +33,7 @@ export const BatchModal: React.FC<BatchModalProps> = ({ current, total, filename
         <div className="bg-[#121212] p-3 rounded border border-gray-800 flex items-center gap-3">
              <div className="w-2 h-2 rounded-full bg-fuji-accent animate-ping"></div>
              <p className="text-xs text-gray-400 font-mono truncate">
-                Processing: <span className="text-gray-200">{filename}</span>
+                正在处理: <span className="text-gray-200">{filename}</span>
              </p>
         </div>
         

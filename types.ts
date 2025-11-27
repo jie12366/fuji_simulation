@@ -42,6 +42,31 @@ export interface GradingAdjustments {
   highlights: ColorGrade;
 }
 
+export interface LocalAdjustments {
+    exposure: number; // -100 to 100
+    contrast: number; // -100 to 100
+    saturation: number; // -100 to 100
+    temperature: number; // -100 to 100
+    tint: number; // -100 to 100
+    sharpness: number; // 0 to 100
+}
+
+export interface MaskLayer {
+    id: string;
+    name: string;
+    visible: boolean;
+    opacity: number; // 0 to 1
+    data: Uint8Array | null; // Alpha map (0-255), null means empty/transparent
+    adjustments: LocalAdjustments;
+}
+
+export interface BrushSettings {
+    size: number; // 1 to 500
+    hardness: number; // 0 to 100 (Not fully implemented in canvas stroke, simplified to blur)
+    opacity: number; // 0 to 100 (Flow)
+    isEraser: boolean;
+}
+
 export interface Adjustments {
   // Basic Tone
   brightness: number; // -100 to 100

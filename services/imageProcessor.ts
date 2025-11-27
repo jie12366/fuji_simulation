@@ -1,5 +1,5 @@
 
-import { Adjustments, LUTContainer, HistogramData, HSLAdjustments, HSLChannel } from '../types';
+import { Adjustments, LUTContainer, HistogramData, HSLAdjustments, HSLChannel, MaskLayer } from '../types';
 
 const mulberry32 = (a: number) => {
     return () => {
@@ -35,17 +35,10 @@ export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => 
     const data = imageData.data;
     const random = mulberry32(1337);
 
-    // Create a copy of the source data for convolution reading
-    // This is essential so we don't sharpen the already sharpened pixels iteratively
     let src: Uint8ClampedArray | null = null;
     if (hasSharpen) src = new Uint8ClampedArray(data);
 
-    // Sharpening Constants
-    // Strength scaled: 0-100 -> 0.0 - 1.5 reasonable range
     const sharpStrength = (amount / 100) * 1.5;
-    // Noise Gate: Differences smaller than this are ignored (prevents grain sharpening)
-    // Higher value = cleaner "smooth" areas, but might miss subtle texture. 
-    // 6-8 is a good "Pro" balance for removing graininess.
     const noiseThreshold = 6; 
     
     for (let y = 0; y < height; y++) {
@@ -53,49 +46,26 @@ export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => 
             const idx = (y * width + x) * 4;
             let r = data[idx], g = data[idx + 1], b = data[idx + 2];
 
-            // --- 1. World-Class Smart Sharpening ---
-            // "Unsharp Mask" approach via High-Pass extraction with Noise Gating
             if (hasSharpen && src) {
-                // Bounds check for 3x3 kernel
                 if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
                     const iU = ((y - 1) * width + x) * 4;
                     const iD = ((y + 1) * width + x) * 4;
                     const iL = (y * width + (x - 1)) * 4;
                     const iR = (y * width + (x + 1)) * 4;
 
-                    // Get Luma of center
                     const lumaC = getLuma(src[idx], src[idx+1], src[idx+2]);
-
-                    // Get Luma of 4-neighbors (Box Blur approximation)
                     const lU = getLuma(src[iU], src[iU+1], src[iU+2]);
                     const lD = getLuma(src[iD], src[iD+1], src[iD+2]);
                     const lL = getLuma(src[iL], src[iL+1], src[iL+2]);
                     const lR = getLuma(src[iR], src[iR+1], src[iR+2]);
                     
                     const lumaAvg = (lU + lD + lL + lR) * 0.25;
-
-                    // High Pass Signal (Details)
                     const detail = lumaC - lumaAvg;
 
-                    // *** KEY UPGRADE: Noise Gate / Thresholding ***
-                    // If the detail contrast is very low (likely noise or flat skin), ignore it.
                     if (Math.abs(detail) > noiseThreshold) {
-                        
-                        // *** KEY UPGRADE: Shadow Protection ***
-                        // Reduce sharpening in very dark areas to prevent noise explosion
-                        // Ramp down from luma 40 to 0
                         let protection = 1.0;
-                        if (lumaC < 40) {
-                            protection = Math.max(0, lumaC / 40);
-                        }
-
-                        // Apply Sharpening
-                        // We add the detail contrast back to the RGB channels proportional to the strength
-                        // This preserves color relation better than sharpening per-channel
+                        if (lumaC < 40) protection = Math.max(0, lumaC / 40);
                         const amount = detail * sharpStrength * protection;
-
-                        // Clamp to prevent Haloing (overshoot)
-                        // Simple approach: Apply
                         r = Math.min(255, Math.max(0, r + amount));
                         g = Math.min(255, Math.max(0, g + amount));
                         b = Math.min(255, Math.max(0, b + amount));
@@ -103,24 +73,13 @@ export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => 
                 }
             }
 
-            // --- 2. Grain (Overlay Mode) ---
             if (hasGrain) {
-                // Generate noise 0..1
                 let noise = random(); 
-                
-                // Adjust strength based on luminance (Shadows/Mids show more grain, Highlights less)
                 const luma = getLuma(r, g, b) / 255;
-                // Suppress grain in pure white and deep black slightly to look more analog
-                const lumaFactor = 1.0 - Math.pow(luma - 0.5, 2) * 4; // Parabolic falloff at extremes? No, simpler:
-                // Standard film curve: shadows have grain, highlights have less.
                 const filmGrainCurve = Math.max(0.2, 1.0 - luma * luma); 
-                
-                // Effective strength
                 const strength = grainAmount * filmGrainCurve * 0.4; 
-
                 const noiseVal = 0.5 + (noise - 0.5) * strength * 2.0;
                 
-                // Apply Overlay Blend
                 r = overlayBlend(r / 255, noiseVal) * 255;
                 g = overlayBlend(g / 255, noiseVal) * 255;
                 b = overlayBlend(b / 255, noiseVal) * 255;
@@ -131,7 +90,6 @@ export const applyTexture = (imageData: ImageData, adjustments: Adjustments) => 
     }
 };
 
-// ... HSL Helpers omitted for brevity, assumed unchanged ...
 function rgbToHsl(r: number, g: number, b: number, out: number[]) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -216,11 +174,51 @@ function applyHSL(r: number, g: number, b: number, hslAdj: HSLAdjustments, hslCa
 
 const lerp = (a: number, b: number, t: number) => a + t * (b - a);
 
+// --- LOCAL ADJUSTMENT HELPER ---
+const applyLocalAdj = (r: number, g: number, b: number, adj: any): [number, number, number] => {
+    let nr = r, ng = g, nb = b;
+
+    // 1. Exposure
+    if (adj.exposure !== 0) {
+        const factor = Math.pow(2, adj.exposure / 33); // Soft exposure curve
+        nr *= factor; ng *= factor; nb *= factor;
+    }
+
+    // 2. Contrast
+    if (adj.contrast !== 0) {
+        const factor = (259 * (adj.contrast + 255)) / (255 * (259 - adj.contrast));
+        nr = factor * (nr - 128) + 128;
+        ng = factor * (ng - 128) + 128;
+        nb = factor * (nb - 128) + 128;
+    }
+
+    // 3. Saturation
+    if (adj.saturation !== 0) {
+        const luma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+        const sFactor = 1 + (adj.saturation / 100);
+        nr = luma + (nr - luma) * sFactor;
+        ng = luma + (ng - luma) * sFactor;
+        nb = luma + (nb - luma) * sFactor;
+    }
+
+    // 4. Temp/Tint (Simplified)
+    if (adj.temperature !== 0 || adj.tint !== 0) {
+        const t = adj.temperature / 100;
+        const tn = adj.tint / 100;
+        nr *= (1 + t);
+        nb *= (1 - t);
+        ng *= (1 - tn);
+    }
+
+    return [Math.max(0, Math.min(255, nr)), Math.max(0, Math.min(255, ng)), Math.max(0, Math.min(255, nb))];
+};
+
 export const applyLUT = (
   pixelData: ImageData, 
   lutContainer: LUTContainer, 
   adjustments: Adjustments,
-  intensity: number
+  intensity: number,
+  masks: MaskLayer[] = [] // Add masks support
 ): { imageData: ImageData, histogram: HistogramData } => {
   const width = pixelData.width;
   const height = pixelData.height;
@@ -232,7 +230,6 @@ export const applyLUT = (
   const histG = new Array(256).fill(0);
   const histB = new Array(256).fill(0);
 
-  // Use the container size (likely 32 from baking)
   const lutSize = lutContainer.size;
   const lutData = lutContainer.data;
   const lutSizeSq = lutSize * lutSize;
@@ -251,19 +248,23 @@ export const applyLUT = (
   const hasHSL = Object.values(adjustments.hsl).some(c => c.h !== 0 || c.s !== 0 || c.l !== 0);
   const hslCache = [0,0,0], rgbCache = [0,0,0];
 
+  // Filter active masks to avoid iteration overhead
+  const activeMasks = masks.filter(m => m.visible && m.data && m.opacity > 0);
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
+      const pixelIndex = y * width + x;
 
       let r = data[i], g = data[i + 1], b = data[i + 2]; const a = data[i + 3];
 
-      // HSL
+      // 1. Global HSL
       if (hasHSL) {
         const newRgb = applyHSL(r, g, b, adjustments.hsl, hslCache, rgbCache);
         r = newRgb[0]; g = newRgb[1]; b = newRgb[2];
       }
 
-      // Basic Tone
+      // 2. Global Tone
       if (brightness !== 0) { r += brightness; g += brightness; b += brightness; }
       if (contrastFactor !== 1) {
         r = contrastFactor * (r - 128) + 128;
@@ -272,7 +273,7 @@ export const applyLUT = (
       }
       r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b));
 
-      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      let luma = 0.299 * r + 0.587 * g + 0.114 * b;
       if (saturationFactor !== 1) {
         r = luma + (r - luma) * saturationFactor;
         g = luma + (g - luma) * saturationFactor;
@@ -283,7 +284,7 @@ export const applyLUT = (
       
       r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b));
 
-      // LUT Lookup (Trilinear)
+      // 3. LUT Lookup
       const rPos = r * scale, gPos = g * scale, bPos = b * scale;
       const r0 = Math.floor(rPos), g0 = Math.floor(gPos), b0 = Math.floor(bPos);
       const r1 = Math.min(lutMax, r0 + 1), g1 = Math.min(lutMax, g0 + 1), b1 = Math.min(lutMax, b0 + 1);
@@ -311,7 +312,23 @@ export const applyLUT = (
         lr = lerp(r, lr, intensity); lg = lerp(g, lg, intensity); lb = lerp(b, lb, intensity);
       }
 
-      // Vignette & Dither
+      // 4. LOCAL ADJUSTMENTS (Masks)
+      // Iterate active masks and blend adjustments
+      for (const mask of activeMasks) {
+          if (!mask.data) continue;
+          const alpha = mask.data[pixelIndex]; // 0-255
+          if (alpha > 0) {
+              const weight = (alpha / 255) * mask.opacity;
+              // Calculate adjusted color
+              const [mr, mg, mb] = applyLocalAdj(lr, lg, lb, mask.adjustments);
+              // Blend based on weight
+              lr = lerp(lr, mr, weight);
+              lg = lerp(lg, mg, weight);
+              lb = lerp(lb, mb, weight);
+          }
+      }
+
+      // 5. Vignette & Dither
       if (vignetteStr > 0) {
         const dx = x - centerX, dy = y - centerY;
         const vFactor = Math.sqrt(dx * dx + dy * dy) / maxDist;
