@@ -54,12 +54,39 @@ const App: React.FC = () => {
   const [activeMaskId, setActiveMaskId] = useState<string | null>(null);
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({ size: 50, hardness: 50, opacity: 50, isEraser: false });
   
-  // Temporary canvas for drawing mask before committing to Uint8Array
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement>(null);
   const currentFinalLUT = useRef<LUTContainer | null>(null);
+
+  // History
+  const [pastStates, setPastStates] = useState<Adjustments[]>([]);
+  const [futureStates, setFutureStates] = useState<Adjustments[]>([]);
+
+  const activeMask = masks.find(m => m.id === activeMaskId);
+
+  const saveSnapshot = () => {
+      setPastStates(prev => [...prev.slice(-20), JSON.parse(JSON.stringify(adjustments))]);
+      setFutureStates([]);
+  };
+
+  const undo = () => {
+      if (pastStates.length === 0) return;
+      const previous = pastStates[pastStates.length - 1];
+      const newPast = pastStates.slice(0, pastStates.length - 1);
+      setFutureStates(prev => [JSON.parse(JSON.stringify(adjustments)), ...prev]);
+      setPastStates(newPast);
+      setAdjustments(previous);
+  };
+
+  const redo = () => {
+      if (futureStates.length === 0) return;
+      const next = futureStates[0];
+      const newFuture = futureStates.slice(1);
+      setPastStates(prev => [...prev, JSON.parse(JSON.stringify(adjustments))]);
+      setFutureStates(newFuture);
+      setAdjustments(next);
+  };
 
   const loadGenericImage = async (file: File): Promise<HTMLImageElement> => {
       const name = file.name.toLowerCase();
@@ -91,32 +118,30 @@ const App: React.FC = () => {
         setHistogramData(null);
         setAiReasoning(null);
         setSuggestedFilename(null);
-        setMasks([]); // Clear masks
+        setMasks([]); 
         setActiveMaskId(null);
+        setPastStates([]);
+        setFutureStates([]);
         
-        // Init temp mask canvas
         const mc = document.createElement('canvas');
         mc.width = img.width;
         mc.height = img.height;
         maskCanvasRef.current = mc;
 
       } catch (err) {
-          alert(`加载图片失败 (Failed to load image).\nError: ${(err as Error).message}`);
+          alert(`图片加载失败 (Load Failed).\nError: ${(err as Error).message}`);
       } finally {
           setIsLoadingFile(false);
       }
     }
   };
 
-  // ... (Batch Upload Omitted for brevity, logic similar to previous but could include mask blending if sophisticated enough, currently keeping batch global only) ...
   const handleBatchUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const fileList = e.target.files;
       if (!fileList || fileList.length === 0) return;
-      // Reuse existing batch logic, masks are complex for batch unless copied strictly by relative coordinates.
-      // For now, let's keep batch processing using Global adjustments only to ensure stability.
       const files = Array.from(fileList) as File[];
       setIsBatchProcessing(true);
-      setBatchStatus({ current: 0, total: files.length, filename: 'Initializing...' });
+      setBatchStatus({ current: 0, total: files.length, filename: '初始化 (Initializing)...' });
       try {
         const JSZip = (window as any).JSZip;
         if (!JSZip) throw new Error("JSZip library not loaded");
@@ -135,7 +160,6 @@ const App: React.FC = () => {
                 if (!ctx) continue;
                 ctx.drawImage(img, 0, 0);
                 const imageData = ctx.getImageData(0, 0, img.width, img.height);
-                // Note: Passing empty masks array for batch as coordinate mapping for masks is image-specific
                 const { imageData: processed } = applyLUT(imageData, currentFinalLUT.current!, adjustments, intensity, []);
                 ctx.putImageData(processed, 0, 0);
                 const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
@@ -147,15 +171,15 @@ const App: React.FC = () => {
         link.href = URL.createObjectURL(content);
         link.download = `Batch_${Date.now()}.zip`;
         link.click();
-      } catch(e) { alert("Batch failed"); } finally { setIsBatchProcessing(false); }
+      } catch(e) { alert("批量处理失败 (Batch Failed)"); } finally { setIsBatchProcessing(false); }
   };
 
-  // Masking Handlers
   const handleAddMask = () => {
+      saveSnapshot();
       if (!originalImage) return;
       const newMask: MaskLayer = {
           id: Date.now().toString(),
-          name: `Mask ${masks.length + 1}`,
+          name: `蒙版 ${masks.length + 1}`,
           visible: true,
           opacity: 1,
           data: createEmptyMaskData(originalImage.width, originalImage.height),
@@ -164,7 +188,6 @@ const App: React.FC = () => {
       setMasks([...masks, newMask]);
       setActiveMaskId(newMask.id);
       
-      // Clear temp canvas
       if (maskCanvasRef.current) {
           const ctx = maskCanvasRef.current.getContext('2d');
           ctx?.clearRect(0, 0, maskCanvasRef.current.width, maskCanvasRef.current.height);
@@ -172,28 +195,28 @@ const App: React.FC = () => {
   };
 
   const handleDeleteMask = (id: string) => {
+      saveSnapshot();
       setMasks(masks.filter(m => m.id !== id));
       if (activeMaskId === id) setActiveMaskId(null);
   };
 
   const handleToggleMask = (id: string) => {
+      saveSnapshot();
       setMasks(masks.map(m => m.id === id ? { ...m, visible: !m.visible } : m));
   };
 
   const handleSelectMask = (id: string) => {
       setActiveMaskId(id);
-      // Re-hydrate mask canvas for editing
       if (maskCanvasRef.current && originalImage) {
           const mask = masks.find(m => m.id === id);
           const ctx = maskCanvasRef.current.getContext('2d');
           if (mask && mask.data && ctx) {
               ctx.clearRect(0, 0, originalImage.width, originalImage.height);
-              // Create ImageData from mask alpha
               const idata = ctx.createImageData(originalImage.width, originalImage.height);
               const d = idata.data;
               for(let i=0; i<mask.data.length; i++) {
                   const a = mask.data[i];
-                  d[i*4] = 255; d[i*4+1] = 0; d[i*4+2] = 0; d[i*4+3] = a; // Red overlay
+                  d[i*4] = 255; d[i*4+1] = 0; d[i*4+2] = 0; d[i*4+3] = a; 
               }
               ctx.putImageData(idata, 0, 0);
           }
@@ -206,63 +229,29 @@ const App: React.FC = () => {
 
   const handleBrushStroke = (x: number, y: number, lastX: number, lastY: number) => {
       if (!activeMaskId || !maskCanvasRef.current) return;
-      
       const ctx = maskCanvasRef.current.getContext('2d');
       if (!ctx) return;
-
-      // Draw visual stroke on temp canvas (Red overlay style)
-      // We keep brush color distinct so user sees where they paint
-      const drawSettings = { ...brushSettings };
-      // Force visual feedback style
       ctx.globalCompositeOperation = brushSettings.isEraser ? 'destination-out' : 'source-over';
       ctx.strokeStyle = `rgba(255, 0, 0, ${brushSettings.opacity / 100})`; 
       ctx.fillStyle = `rgba(255, 0, 0, ${brushSettings.opacity / 100})`;
-      
-      drawStroke(ctx, x, y, lastX, lastY, { ...brushSettings, opacity: brushSettings.opacity }); // Use opacity for flow
-
-      // Update Mask Data efficiently
-      // We rely on Canvas for the stroke math, then extract back
-      // Optimization: Don't extract every frame. Just visually draw on the CanvasView overlay
-      // AND this offscreen canvas. 
-      // The `masks` state update should happen on MouseUp (commit).
-      
-      // For realtime visual feedback in CanvasView component, we are modifying the DOM
-      // For the actual Mask Data, we will extract it in handleStrokeEnd (triggered by mouse up)
+      drawStroke(ctx, x, y, lastX, lastY, { ...brushSettings, opacity: brushSettings.opacity });
   };
 
-  // Since `CanvasView` calls `onStroke` every move, we need to commit the result eventually.
-  // However, `onStroke` in CanvasView is purely for the visual feedback loop?
-  // No, we need to update the render.
-  // Better approach: 
-  // 1. `CanvasView` manages the "Visual" overlay drawing directly.
-  // 2. `CanvasView` tells App "I finished a stroke" (MouseUp).
-  // 3. App extracts data from `maskCanvasRef` (which mirrors the visual) and updates `masks` state.
-  // Wait, CanvasView has its own canvas. We can just use one Shared Canvas reference?
-  // Let's assume `CanvasView` handles the UI drawing. We need to sync the data.
-  
-  // Simplified flow for React perf:
-  // The `onStroke` prop in CanvasView will call `handleBrushStroke` which draws to `maskCanvasRef` (offscreen).
-  // Triggering a full re-render of the main image on every mouse move is too slow.
-  // So: We only re-render the main image when mouse goes UP.
-  // During drag, we only see the Red Overlay on top of the old image.
-  
   const handleMouseUp = () => {
-      // Commit mask
       if (activeMaskId && maskCanvasRef.current) {
           const newData = canvasToMaskData(maskCanvasRef.current);
           setMasks(prev => prev.map(m => m.id === activeMaskId ? { ...m, data: newData } : m));
       }
   };
 
-  // Add mouse up listener globally to catch drag release
   useEffect(() => {
       window.addEventListener('mouseup', handleMouseUp);
       return () => window.removeEventListener('mouseup', handleMouseUp);
   }, [activeMaskId]);
 
-
   const handleAIAutoAdjust = async (hint: string = '') => {
     if (!originalImage) return;
+    saveSnapshot();
     try {
       setIsAIAnalyzing(true);
       setAiReasoning(null);
@@ -284,10 +273,11 @@ const App: React.FC = () => {
       }));
       setAiReasoning(result.reasoning);
       if (result.suggestedFilename) setSuggestedFilename(result.suggestedFilename);
-    } catch (error) { alert("AI Analysis Failed."); } finally { setIsAIAnalyzing(false); }
+    } catch (error) { alert("AI 分析失败 (Analysis Failed)."); } finally { setIsAIAnalyzing(false); }
   };
 
   const handleApplyPreset = (name: string, presetAdjustments: Partial<Adjustments>) => {
+      saveSnapshot();
       const defaults = createDefaultAdjustments();
       setCurrentFilm(FilmSimulation.None);
       setAdjustments(prev => ({
@@ -322,6 +312,7 @@ const App: React.FC = () => {
   };
 
   const handleReset = () => {
+      saveSnapshot();
       setAdjustments(createDefaultAdjustments());
       setIntensity(1.0);
       setCurrentFilm(FilmSimulation.Provia);
@@ -341,7 +332,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const timer = setTimeout(() => triggerProcessing(), 15);
     return () => clearTimeout(timer);
-  }, [adjustments, intensity, originalImage, masks]); // Add masks dependency
+  }, [adjustments, intensity, originalImage, masks]); 
 
   const triggerProcessing = useCallback(() => {
     if (!originalImage || !originalCanvasRef.current || !processedCanvasRef.current || !currentFinalLUT.current) {
@@ -363,7 +354,7 @@ const App: React.FC = () => {
         currentFinalLUT.current, 
         adjustments, 
         intensity,
-        masks // Pass masks to processor
+        masks 
     );
 
     setHistogramData(histogram);
@@ -371,7 +362,6 @@ const App: React.FC = () => {
     processedCanvasRef.current.height = height;
     procCtx.putImageData(processedData, 0, 0);
     
-    // Optional Halation
     if (adjustments.halation > 0) {
         const halationStr = adjustments.halation / 100;
         const scale = 0.25; 
@@ -408,6 +398,7 @@ const App: React.FC = () => {
         processedCanvasRef={processedCanvasRef}
         isMaskingMode={!!activeMaskId}
         brushSettings={brushSettings}
+        activeMaskData={activeMask?.data || null}
         onStroke={handleBrushStroke}
       />
       
@@ -415,7 +406,7 @@ const App: React.FC = () => {
         <div className="fixed bottom-6 left-6 z-50 max-w-md bg-gray-900/90 border border-fuji-accent text-gray-200 px-4 py-3 rounded-lg shadow-2xl backdrop-blur">
              <div className="flex items-start gap-3">
              <span className="text-xl">✨</span>
-             <div><h4 className="font-bold text-fuji-accent text-sm mb-1">AI 调色完成 (AI Finished)</h4><p className="text-xs text-gray-300">{aiReasoning}</p></div>
+             <div><h4 className="font-bold text-fuji-accent text-sm mb-1">AI 调色完成 (Analysis Done)</h4><p className="text-xs text-gray-300">{aiReasoning}</p></div>
              <button onClick={() => setAiReasoning(null)} className="ml-auto">✕</button>
           </div>
         </div>
@@ -433,7 +424,6 @@ const App: React.FC = () => {
         onHelp={() => setIsHelpOpen(true)}
         isProcessing={isProcessing} histogramData={histogramData}
         isAIAnalyzing={isAIAnalyzing} onAIAuto={handleAIAutoAdjust}
-        // Masking Props
         masks={masks}
         activeMaskId={activeMaskId}
         onAddMask={handleAddMask}
@@ -443,6 +433,9 @@ const App: React.FC = () => {
         onLocalAdjChange={handleLocalAdjChange}
         brushSettings={brushSettings}
         onBrushChange={(k, v) => setBrushSettings(prev => ({...prev, [k]: v}))}
+        onUndo={undo} onRedo={redo}
+        canUndo={pastStates.length > 0}
+        canRedo={futureStates.length > 0}
       />
       <canvas ref={originalCanvasRef} className="hidden" />
     </div>

@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Adjustments, FilmSimulation, HistogramData, HSLAdjustments, GradingAdjustments, MaskLayer, BrushSettings, LocalAdjustments } from '../types';
 import { Histogram } from './Histogram';
 
@@ -19,7 +19,7 @@ interface ControlsProps {
   onBatchUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onReset: () => void;
   onApplyPreset: (name: string, adjustments: Partial<Adjustments>) => void;
-  onHelp: () => void; // Added onHelp prop
+  onHelp: () => void;
 
   isProcessing: boolean;
   histogramData: HistogramData | null;
@@ -36,6 +36,12 @@ interface ControlsProps {
   onLocalAdjChange: (id: string, key: keyof LocalAdjustments, val: number) => void;
   brushSettings: BrushSettings;
   onBrushChange: (key: keyof BrushSettings, val: any) => void;
+  
+  // History
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 const Slider = ({ label, value, min, max, onChange, unit = '', bgClass = '' }: { label: string, value: number, min: number, max: number, onChange: (v: number) => void, unit?: string, bgClass?: string }) => (
@@ -100,7 +106,8 @@ export const Controls: React.FC<ControlsProps> = ({
   filterIntensity, onIntensityChange, onUpload, onDownload, onBatchUpload, onReset, onApplyPreset, onHelp,
   isProcessing, histogramData, isAIAnalyzing, onAIAuto,
   masks, activeMaskId, onAddMask, onDeleteMask, onToggleMask, onSelectMask, onLocalAdjChange,
-  brushSettings, onBrushChange
+  brushSettings, onBrushChange,
+  onUndo, onRedo, canUndo, canRedo
 }) => {
   const [activeTab, setActiveTab] = useState<'basic' | 'color' | 'grading' | 'fx' | 'local'>('basic');
   const [aiPrompt, setAiPrompt] = useState('');
@@ -141,14 +148,24 @@ export const Controls: React.FC<ControlsProps> = ({
             <div className="text-[9px] text-gray-600 font-bold tracking-[0.2em] mt-1">纯 净 数 学 引 擎</div>
           </div>
           <div className="flex gap-2">
-            <button type="button" onClick={onHelp} title="使用指南 (Help)" className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white p-1.5 rounded-md transition-colors border border-gray-700">
+            {onUndo && (
+                <button type="button" onClick={onUndo} disabled={!canUndo} className={`bg-gray-800 p-1.5 rounded-md border border-gray-700 ${!canUndo ? 'opacity-30 cursor-not-allowed' : 'hover:bg-gray-700 text-gray-400 hover:text-white'}`}>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                </button>
+            )}
+            {onRedo && (
+                <button type="button" onClick={onRedo} disabled={!canRedo} className={`bg-gray-800 p-1.5 rounded-md border border-gray-700 ${!canRedo ? 'opacity-30 cursor-not-allowed' : 'hover:bg-gray-700 text-gray-400 hover:text-white'}`}>
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" /></svg>
+                </button>
+            )}
+            <button type="button" onClick={onHelp} title="使用指南" className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white p-1.5 rounded-md transition-colors border border-gray-700">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
             </button>
-            <label title="导入图片 (Import)" className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white p-1.5 rounded-md transition-colors border border-gray-700">
+            <label title="导入图片" className="cursor-pointer bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white p-1.5 rounded-md transition-colors border border-gray-700">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
                 <input type="file" className="hidden" accept="image/*,.dng,.nef,.arw,.cr2,.orf,.rw2,.raf" onChange={onUpload} />
             </label>
-            <button type="button" onClick={handleResetClick} title="重置参数 (Reset)" className="bg-gray-800 hover:bg-red-900/30 text-gray-400 hover:text-red-400 p-1.5 rounded-md transition-colors border border-gray-700">
+            <button type="button" onClick={handleResetClick} title="重置参数" className="bg-gray-800 hover:bg-red-900/30 text-gray-400 hover:text-red-400 p-1.5 rounded-md transition-colors border border-gray-700">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
             </button>
           </div>
@@ -170,7 +187,7 @@ export const Controls: React.FC<ControlsProps> = ({
                             value={selectedPreset}
                             className="w-full bg-[#181818] hover:bg-[#202020] text-gray-300 text-[11px] border border-gray-700/50 rounded-lg px-3 py-2 focus:outline-none focus:border-fuji-accent/50 appearance-none transition-all font-medium cursor-pointer"
                          >
-                            <option value="" disabled>🎨 应用大师预设 (Apply Preset)...</option>
+                            <option value="" disabled>🎨 应用大师预设...</option>
                             {MASTER_PRESETS.map((p, i) => <option key={i} value={p.name}>{p.name}</option>)}
                         </select>
                         <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none text-gray-500">
@@ -185,7 +202,7 @@ export const Controls: React.FC<ControlsProps> = ({
                                 value={selectedAIStyle}
                                 className="w-full bg-[#181818] hover:bg-[#202020] text-fuji-accent text-[11px] border border-gray-700/50 rounded-lg pl-3 pr-8 py-2 focus:outline-none focus:border-fuji-accent/50 appearance-none font-medium cursor-pointer"
                              >
-                                <option value="" disabled>⚡️ 快速选择 AI 风格 (AI Style)...</option>
+                                <option value="" disabled>⚡️ 快速选择 AI 风格...</option>
                                 {PRESET_PROMPTS.map((p, i) => <option key={i} value={p.value}>{p.label}</option>)}
                              </select>
                              <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none text-fuji-accent">
@@ -198,7 +215,7 @@ export const Controls: React.FC<ControlsProps> = ({
                                 value={aiPrompt}
                                 onChange={(e) => setAiPrompt(e.target.value)}
                                 placeholder="AI 提示词... (例如: 赛博朋克)"
-                                className="flex-1 bg-[#121212] text-gray-300 text-[11px] border border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:border-fuji-accent"
+                                className="flex-1 bg-[#121212] text-gray-300 text-[11px] border border-gray-700 rounded-lg px-3 py-2 focus:outline-none focus:border-fuji-accent placeholder-gray-600"
                             />
                             <button 
                                 onClick={() => onAIAuto && onAIAuto(aiPrompt)} 
@@ -209,7 +226,7 @@ export const Controls: React.FC<ControlsProps> = ({
                                     : 'bg-fuji-accent text-black hover:bg-white hover:shadow-fuji-accent/40'
                                 }`}
                             >
-                                {isAIAnalyzing ? '...' : 'AI 智能调色'}
+                                {isAIAnalyzing ? '分析中...' : 'AI 执行'}
                             </button>
                         </div>
                     </div>
@@ -221,7 +238,7 @@ export const Controls: React.FC<ControlsProps> = ({
             <div className="bg-[#111] rounded-xl border border-gray-800/50 p-1">
                 <div className="flex p-1 bg-black/40 rounded-lg mb-4 overflow-x-auto no-scrollbar">
                     <TabButton active={activeTab === 'basic'} onClick={() => setActiveTab('basic')} label="基础" />
-                    <TabButton active={activeTab === 'color'} onClick={() => setActiveTab('color')} label="HSL" />
+                    <TabButton active={activeTab === 'color'} onClick={() => setActiveTab('color')} label="色彩" />
                     <TabButton active={activeTab === 'grading'} onClick={() => setActiveTab('grading')} label="分级" />
                     <TabButton active={activeTab === 'fx'} onClick={() => setActiveTab('fx')} label="特效" />
                     <TabButton active={activeTab === 'local'} onClick={() => setActiveTab('local')} label="局部" />
@@ -249,16 +266,23 @@ export const Controls: React.FC<ControlsProps> = ({
                                 <div className="mt-2">
                                     <Slider label="强度 (Intensity)" value={filterIntensity * 100} min={0} max={100} onChange={(v) => onIntensityChange(v / 100)} unit="%" />
                                 </div>
+                                <button 
+                                    type="button" 
+                                    onClick={handleResetClick}
+                                    className="w-full mt-2 py-1.5 text-[10px] bg-gray-800/50 hover:bg-red-900/20 text-gray-500 hover:text-red-400 rounded border border-transparent hover:border-red-900/30 transition-all"
+                                >
+                                    重置所有参数 (Reset All)
+                                </button>
                             </div>
 
-                            <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 mt-1">光影 TONE</div>
+                            <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 mt-1">光影 (TONE)</div>
                             <Slider label="曝光 (Exposure)" value={adjustments.brightness} min={-100} max={100} onChange={(v) => onAdjustmentChange('brightness', v)} />
                             <Slider label="对比度 (Contrast)" value={adjustments.contrast} min={-100} max={100} onChange={(v) => onAdjustmentChange('contrast', v)} />
                             <Slider label="高光 (Highlights)" value={adjustments.highlights} min={-100} max={100} onChange={(v) => onAdjustmentChange('highlights', v)} />
                             <Slider label="阴影 (Shadows)" value={adjustments.shadows} min={-100} max={100} onChange={(v) => onAdjustmentChange('shadows', v)} />
                             <Slider label="饱和度 (Saturation)" value={adjustments.saturation} min={-100} max={100} onChange={(v) => onAdjustmentChange('saturation', v)} />
                             
-                            <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 mt-4">白平衡 WHITE BALANCE</div>
+                            <div className="text-[10px] font-bold text-gray-500 uppercase mb-2 mt-4">白平衡 (WHITE BALANCE)</div>
                             <Slider label="色温 (Temp)" value={adjustments.whiteBalance.temp} min={-50} max={50} onChange={(v) => onWBChange('temp', v)} bgClass="bg-gradient-to-r from-blue-900/30 via-gray-700/30 to-yellow-900/30 rounded-full h-1" />
                             <Slider label="色调 (Tint)" value={adjustments.whiteBalance.tint} min={-50} max={50} onChange={(v) => onWBChange('tint', v)} bgClass="bg-gradient-to-r from-green-900/30 via-gray-700/30 to-fuchsia-900/30 rounded-full h-1" />
                         </div>
@@ -313,7 +337,7 @@ export const Controls: React.FC<ControlsProps> = ({
                                     <h4 className="text-[10px] font-bold text-gray-500 uppercase">图层 (LAYERS)</h4>
                                     <button onClick={onAddMask} className="text-[10px] bg-fuji-accent/20 text-fuji-accent px-2 py-1 rounded hover:bg-fuji-accent hover:text-black transition-colors">+ 新建蒙版</button>
                                 </div>
-                                <div className="space-y-1 max-h-32 overflow-y-auto">
+                                <div className="space-y-1 max-h-32 overflow-y-auto custom-scrollbar">
                                     {masks.length === 0 && <p className="text-xs text-gray-600 text-center py-2">暂无图层 (No Layers)</p>}
                                     {masks.map(mask => (
                                         <div 

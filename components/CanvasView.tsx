@@ -10,6 +10,7 @@ interface CanvasViewProps {
   // Masking Props
   isMaskingMode: boolean;
   brushSettings: BrushSettings;
+  activeMaskData: Uint8Array | null; // Raw mask data for visualization
   onStroke: (x: number, y: number, lastX: number, lastY: number) => void;
 }
 
@@ -19,10 +20,14 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
   originalCanvasRef,
   isMaskingMode,
   brushSettings,
+  activeMaskData,
   onStroke
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
+  const cursorRef = useRef<HTMLDivElement>(null); // Direct DOM ref for performance
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
   const [sliderPosition, setSliderPosition] = useState(50);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   
@@ -33,10 +38,6 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
   const [isDrawing, setIsDrawing] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [lastPoint, setLastPoint] = useState<{x:number, y:number} | null>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  // Cursor Overlay
-  const [cursorPos, setCursorPos] = useState({ x: -100, y: -100 });
 
   // Fit to screen helper
   const calculateBestFit = () => {
@@ -57,6 +58,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       setPosition({ x: 0, y: 0 });
   };
 
+  // Initial Draw & Resize Listener
   useEffect(() => {
     if (originalImage && originalCanvasRef.current) {
       const canvas = originalCanvasRef.current;
@@ -66,12 +68,10 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
         canvas.height = originalImage.height;
         ctx.drawImage(originalImage, 0, 0);
       }
-      // Reset overlay
+      // Reset overlay dimensions
       if (overlayRef.current) {
           overlayRef.current.width = originalImage.width;
           overlayRef.current.height = originalImage.height;
-          const oCtx = overlayRef.current.getContext('2d');
-          if(oCtx) oCtx.clearRect(0,0,originalImage.width, originalImage.height);
       }
       calculateBestFit();
       
@@ -80,6 +80,35 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       return () => window.removeEventListener('resize', handleResize);
     }
   }, [originalImage, originalCanvasRef]);
+
+  // --- MASK VISUALIZATION ENGINE ---
+  useEffect(() => {
+      if (!overlayRef.current || !originalImage) return;
+      const ctx = overlayRef.current.getContext('2d');
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, overlayRef.current.width, overlayRef.current.height);
+
+      if (isMaskingMode && activeMaskData) {
+          // Convert Uint8 alpha map to Red Overlay
+          const width = overlayRef.current.width;
+          const height = overlayRef.current.height;
+          const imgData = ctx.createImageData(width, height);
+          const px = imgData.data;
+          
+          for (let i = 0; i < activeMaskData.length; i++) {
+              const alpha = activeMaskData[i];
+              if (alpha > 0) {
+                  const idx = i * 4;
+                  px[idx] = 255;     // R
+                  px[idx + 1] = 0;   // G
+                  px[idx + 2] = 0;   // B
+                  px[idx + 3] = alpha * 0.5; // Semi-transparent
+              }
+          }
+          ctx.putImageData(imgData, 0, 0);
+      }
+  }, [activeMaskData, isMaskingMode, originalImage]);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (!originalImage) return;
@@ -95,12 +124,21 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
     
     if (isMaskingMode && originalImage && wrapperRef.current) {
         setIsDrawing(true);
-        // Calculate image coordinates
         const rect = wrapperRef.current.getBoundingClientRect();
         const x = (e.clientX - rect.left) / scale;
         const y = (e.clientY - rect.top) / scale;
         setLastPoint({ x, y });
-        onStroke(x, y, -1, -1); // Start stroke
+        onStroke(x, y, -1, -1); 
+
+        // Immediate visual feedback on overlay
+        const ctx = overlayRef.current?.getContext('2d');
+        if (ctx) {
+            ctx.fillStyle = `rgba(255, 0, 0, ${brushSettings.opacity / 200})`; // Light red dot
+            ctx.beginPath();
+            ctx.arc(x, y, brushSettings.size / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
     } else {
         setIsPanning(true);
         setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
@@ -108,11 +146,14 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    // Update cursor for brush
-    if (isMaskingMode && wrapperRef.current) {
-        setCursorPos({ x: e.clientX, y: e.clientY });
+    // 1. High Performance Cursor Tracking (Direct DOM)
+    if (isMaskingMode && cursorRef.current) {
+        cursorRef.current.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+        cursorRef.current.style.width = `${brushSettings.size * scale}px`;
+        cursorRef.current.style.height = `${brushSettings.size * scale}px`;
     }
 
+    // 2. Drawing Logic
     if (isDrawing && isMaskingMode && originalImage && wrapperRef.current) {
         const rect = wrapperRef.current.getBoundingClientRect();
         const x = (e.clientX - rect.left) / scale;
@@ -120,9 +161,28 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
         
         if (lastPoint) {
             onStroke(x, y, lastPoint.x, lastPoint.y);
+            
+            // Immediate visual feedback
+            const ctx = overlayRef.current?.getContext('2d');
+            if (ctx) {
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.lineWidth = brushSettings.size;
+                ctx.strokeStyle = brushSettings.isEraser 
+                    ? 'rgba(0,0,0,1)' // Hack: Eraser viz is hard on single layer, logic handled in data
+                    : `rgba(255, 0, 0, ${brushSettings.opacity / 200})`; 
+                ctx.globalCompositeOperation = brushSettings.isEraser ? 'destination-out' : 'source-over';
+                ctx.beginPath();
+                ctx.moveTo(lastPoint.x, lastPoint.y);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+                ctx.globalCompositeOperation = 'source-over';
+            }
         }
         setLastPoint({ x, y });
-    } else if (isPanning) {
+    } 
+    // 3. Panning Logic
+    else if (isPanning) {
         setPosition({
             x: e.clientX - dragStart.x,
             y: e.clientY - dragStart.y
@@ -183,16 +243,18 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Brush Cursor */}
+      {/* Brush Cursor (Optimized via ref) */}
       {isMaskingMode && (
           <div 
+            ref={cursorRef}
             className="fixed pointer-events-none rounded-full border border-white bg-white/20 z-[100]"
             style={{ 
-                left: cursorPos.x, 
-                top: cursorPos.y, 
-                width: brushSettings.size * scale, 
-                height: brushSettings.size * scale,
-                transform: 'translate(-50%, -50%)'
+                left: 0, 
+                top: 0,
+                width: 0, // Set dynamically via ref
+                height: 0, // Set dynamically via ref
+                transform: 'translate(-50%, -50%)',
+                willChange: 'transform, width, height'
             }}
           />
       )}
@@ -214,7 +276,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
            title="适应屏幕"
          >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
-            <span className="text-[10px] font-bold uppercase tracking-wide">适应屏幕</span>
+            <span className="text-[10px] font-bold uppercase tracking-wide">适应屏幕 (Fit)</span>
          </button>
       </div>
 
@@ -236,15 +298,14 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
             style={{ clipPath: isMaskingMode ? 'none' : `inset(0 0 0 ${sliderPosition}%)` }}
         />
         
-        {/* Mask Overlay - Only visible during editing to show "Red Eye" or interaction */}
-        {/* For simplicity, this canvas is where we draw the mask strokes visually */}
+        {/* Mask Overlay */}
         <canvas 
             ref={overlayRef}
-            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-200 ${isMaskingMode ? 'opacity-60' : 'opacity-0'}`}
+            className={`absolute top-0 left-0 w-full h-full pointer-events-none transition-opacity duration-200 ${isMaskingMode ? 'opacity-100' : 'opacity-0'}`}
             style={{ mixBlendMode: 'normal' }}
         />
 
-        {/* Slider Elements (Hidden when masking) */}
+        {/* Slider Elements */}
         {!isMaskingMode && (
             <>
                 <div 
@@ -265,7 +326,7 @@ export const CanvasView: React.FC<CanvasViewProps> = ({
                     </div>
                 </div>
                 <div className="absolute bottom-4 left-4 px-2 py-1 rounded bg-black/50 backdrop-blur text-[10px] font-bold text-gray-400 border border-white/5 pointer-events-none tracking-widest uppercase">原图 (ORIGINAL)</div>
-                <div className="absolute bottom-4 right-4 px-2 py-1 rounded bg-fuji-accent/10 backdrop-blur text-[10px] font-bold text-fuji-accent border border-fuji-accent/30 pointer-events-none tracking-widest uppercase shadow-[0_0_10px_rgba(0,208,132,0.2)]">模拟效果 (SIMULATION)</div>
+                <div className="absolute bottom-4 right-4 px-2 py-1 rounded bg-fuji-accent/10 backdrop-blur text-[10px] font-bold text-fuji-accent border border-fuji-accent/30 pointer-events-none tracking-widest uppercase shadow-[0_0_10px_rgba(0,208,132,0.2)]">效果 (SIMULATED)</div>
             </>
         )}
       </div>
